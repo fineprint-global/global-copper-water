@@ -17,7 +17,6 @@ if(!file.exists("data/WaterDepletion_WaterGap3.zip")){
 }
 
 water_depletion <- rast("data/WaterDepletion_WaterGap3/WaterDepletionCat_WG3.tif")
-plot(water_depletion)
 
 ### Add GRACE - Trends in Global Freshwater Availability from the Gravity Recovery and Climate Experiment (GRACE), v1 (2002 – 2016)
 #   Rodell, M., J. S. Famiglietti, D. N. Wiese, J. T. Reager, H. K. Beaudoing, F. W. Landerer, and M.-H. Lo. 2019. Trends in Global Freshwater Availability from the Gravity Recovery and Climate Experiment (GRACE). Palisades, New York: NASA Socioeconomic Data and Applications Center (SEDAC). https://doi.org/10.7927/H4TT4P2C.
@@ -31,19 +30,17 @@ if(file.exists("data/sdei-trends-freshwater-availability-grace-2002-2016-geotiff
  unzip("data/sdei-trends-freshwater-availability-grace-2002-2016-geotiff.zip", exdir = "data/")
 }
 freshwater_availability <- rast("data/freshwater_availability.tif")
-plot(freshwater_availability)
 
 if(file.exists("data/gpw-v4-data-quality-indicators-rev11_watermask_30_min_tif.zip")){
  unzip("data/gpw-v4-data-quality-indicators-rev11_watermask_30_min_tif.zip", exdir = "data/")
 }
 water_mask <- rast("data/gpw_v4_data_quality_indicators_rev11_watermask_30_min.tif")
-plot(water_mask)
 
-raw_data <- read_excel('./data/Copper data for analysis_20230223.xlsx') |> 
+raw_data <- read_excel('./data/Copper data for analysis_20240405.xlsx') |> 
   mutate(id = row_number())
 
 sf_data <- select(raw_data, id, Longitude, Latitude, REG_TOP_20, mine, snl_id, country, country_code, region, cumulative_production, average_production, 
-                  by_prod_group = `by-prod-group`, mine_type_combined, ore_body_group = `Ore Body Group`, process_route = `Process route`, ore_grade = `Ore grade MI`) |> 
+                  by_prod_group = `by-prod-group 2`, mine_type_combined, ore_body_group = `Ore Body Group`, process_route = `Process route`, ore_grade = `Ore grade MI`) |> 
   mutate(
     Latitude  = as.numeric(ifelse(Latitude == "Copper", 0, Latitude)),
     check_0  = Longitude == 0 & Latitude == 0, 
@@ -55,8 +52,6 @@ sf_data <- select(raw_data, id, Longitude, Latitude, REG_TOP_20, mine, snl_id, c
 
 sf_data$water_depletion <- extract(water_depletion, sf_data)[,2]
 sf_data$freshwater_availability <- extract(freshwater_availability, sf_data)[,2]
-
-plot(select(sf_data, water_depletion), add = TRUE)
 
 ts_data <- select(raw_data, id, `2015`, `2016`, `2017`, `2018`, `2019`, ToWa_2015, RaWa_2015, ToWa_2016, RaWa_2016, ToWa_2017, RaWa_2017, ToWa_2018, RaWa_2018, ToWa_2019, RaWa_2019) |> 
   pivot_longer(cols = -id, names_to = "year", values_to = "value") |> 
@@ -76,75 +71,94 @@ ts_data <- select(raw_data, id, `2015`, `2016`, `2017`, `2018`, `2019`, ToWa_201
          by_prod_group = as.character(by_prod_group), 
          mine_type_combined = as.character(mine_type_combined))
 
-# Check data availability 
+# CHeck remove process route "other" / "unknonwn" - currently ~1.5% of the recorded production 
 ts_data |> 
-  select(total_water, ore_body_group, process_route, mine_type_combined, by_prod_group) |> 
-  pivot_longer(cols = -total_water) |> 
-  ggplot(aes(x = value, y = total_water)) + 
-  facet_wrap(~name, scales = "free") + 
-  geom_boxplot(outlier.colour="black", outlier.shape=16, outlier.size=2, notch=FALSE)
+  group_by(process_route) |> 
+  summarise(production = sum(production, na.rm = T)) |>
+  mutate(perc = production / sum(production)) |>
+  arrange(desc(perc))
+
+ts_data <- filter(ts_data, process_route != "other")
 
 # create prediction set 
 selected_predictors_numeric <- c("production") 
-selected_predictors_factor <- c("process_route", "mine_type_combined", "ore_body_group")
+selected_predictors_factor <- c("process_route", "mine_type_combined", "ore_body_group", "by_prod_group")
 selected_predictors <- c(selected_predictors_numeric, selected_predictors_factor)
-selected_process_route <- c("concentrator", "hydro", "pyro") # must remove as there are no observations on total water
-selected_ore_body_group <- c("IoCg", "NnNn", "PoDe") # must remove as there are no observations on total water
-selected_by_prod_group <- c("CuAA", "CuCo", "CuCu", "CuMo", "CuNi", "CuNN", "CuZn") # must remove as there are no observations on total water
-transform_mine_type <- ~ ifelse(.x=="Underground", "Combined", .x) # merge with combined as there is a single observation
 
-data_prediction <- ts_data |> 
-  select(id, year, total_water, all_of(selected_predictors)) |> 
-  drop_na(any_of(selected_predictors)) |> 
-  filter(if_any(matches("process_route"), ~ .x %in% selected_process_route)) |> 
-  filter(if_any(matches("ore_body_group"), ~ .x %in% selected_ore_body_group)) |> 
-  filter(if_any(matches("by_prod_group"), ~ .x %in% selected_by_prod_group)) |> 
-  mutate(across(matches("mine_type_combined"), transform_mine_type))
+no_missing_data <- ts_data |> 
+  mutate(by_prod_group = ifelse(by_prod_group == "CuCu", "CuNN", by_prod_group)) |>
+  select(id, year, total_water, raw_water, all_of(selected_predictors)) |> 
+  drop_na(any_of(selected_predictors))
 
-data_training <- drop_na(data_prediction)
-
-data_prediction |> 
-  select(id, all_of(selected_predictors_factor)) |> 
-  group_by(id) |> 
-  summarise(across(everything(), unique)) |> 
-  pivot_longer(cols = -id) |> 
-  ggplot(aes(x = value, y = after_stat(count))) + 
+# Check data availability 
+no_missing_data |> 
+  select(total_water, raw_water, ore_body_group, process_route, mine_type_combined, by_prod_group) |> 
+  pivot_longer(cols = -c(total_water, raw_water)) |> 
+  pivot_longer(cols = c(total_water, raw_water), names_to = "water_use", values_to = "volume", values_drop_na = TRUE) |> 
+  ggplot(aes(x = value, y = volume, colour = water_use)) + 
   facet_wrap(~name, scales = "free") + 
-  geom_bar() + 
-  geom_text(stat='count', aes(label=..count..), vjust=-0.5) +
-  ggtitle("Number of mines per group in the prediction dataset")
+  geom_boxplot(outlier.colour="black", outlier.shape=16, outlier.size=2, notch=FALSE)
 
-data_training |> 
-  select(id, all_of(selected_predictors_factor)) |> 
-  group_by(id) |> 
-  summarise(across(everything(), unique)) |> 
-  pivot_longer(cols = -id) |> 
-  ggplot(aes(x = value, y = after_stat(count))) + 
-  facet_wrap(~name, scales = "free") + 
-  geom_bar() + 
-  geom_text(stat='count', aes(label=..count..), vjust=-0.5) +
-  ggtitle("Number of samples per group in the prediction dataset")
+data_training_total_water <- drop_na(select(no_missing_data, -raw_water))
+length(unique(data_training_total_water$id))
+
+data_training_raw_water <- drop_na(select(no_missing_data, -total_water))
+length(unique(data_training_raw_water$id))
+
+setdiff(no_missing_data$process_route, data_training_raw_water$process_route)
+setdiff(no_missing_data$mine_type_combined, data_training_raw_water$mine_type_combined)
+setdiff(no_missing_data$by_prod_group, data_training_raw_water$by_prod_group)
+setdiff(no_missing_data$ore_body_group, data_training_raw_water$ore_body_group)
+
+setdiff(no_missing_data$process_route, data_training_total_water$process_route)
+setdiff(no_missing_data$mine_type_combined, data_training_total_water$mine_type_combined)
+setdiff(no_missing_data$by_prod_group, data_training_total_water$by_prod_group)
+setdiff(no_missing_data$ore_body_group, data_training_total_water$ore_body_group)
+
+data_prediction_raw_water <- no_missing_data |>
+  filter(
+    !process_route %in% setdiff(no_missing_data$process_route, data_training_raw_water$process_route),
+    !mine_type_combined %in% setdiff(no_missing_data$mine_type_combined, data_training_raw_water$mine_type_combined),
+    !by_prod_group %in% setdiff(no_missing_data$by_prod_group, data_training_raw_water$by_prod_group),
+    !ore_body_group %in% setdiff(no_missing_data$ore_body_group, data_training_raw_water$ore_body_group)
+  )
+
+data_prediction_raw_water
+length(unique(data_prediction_raw_water$id))
+
+data_prediction_total_water <- no_missing_data |>
+  filter(
+    !process_route %in% setdiff(no_missing_data$process_route, data_training_total_water$process_route),
+    !mine_type_combined %in% setdiff(no_missing_data$mine_type_combined, data_training_total_water$mine_type_combined),
+    !by_prod_group %in% setdiff(no_missing_data$by_prod_group, data_training_total_water$by_prod_group),
+    !ore_body_group %in% setdiff(no_missing_data$ore_body_group, data_training_total_water$ore_body_group)
+  )
+
+data_prediction_total_water
+length(unique(data_prediction_total_water$id))
+
+sum(data_prediction_total_water$production) / sum(ts_data$production, na.rm = T)
 
 fit_control <- trainControl(method = "repeatedcv",
                             number = 10,     # number of folds
-                            repeats = 100)    # repeated ten times
+                            repeats = 10)    # repeated ten times
 
-fm <- as.formula(str_c("total_water ~ ", str_c(selected_predictors, collapse = " + ")))
+fm <- as.formula(str_c("raw_water ~ ", str_c(selected_predictors, collapse = " + ")))
 
-model_rf <- train(fm, data = data_training, method = "rf",  trControl = fit_control)  
+model_rf <- ?train(fm, data = data_training_raw_water, method = "rf",  trControl = fit_control)  
 
 ggplot(varImp(model_rf))
 
 model_rf
 
 data_prediction <- data_prediction |> 
-  mutate(total_water_pred = predict(model_rf, data_prediction), .after = total_water)
+  mutate(water_var_pred = predict(model_rf, data_prediction), .after = water_var)
 
 select(sf_data, id, country) |> 
   st_drop_geometry() |> 
   left_join(data_prediction, multiple = "all") |> 
-  filter(!is.na(total_water)) |> 
-  ggplot(aes(x = total_water_pred, y = total_water, label = id, colour = country)) + 
+  filter(!is.na(water_var)) |> 
+  ggplot(aes(x = water_var_pred, y = water_var, label = id, colour = country)) + 
   geom_point() + 
   geom_abline(colour = "blue") + 
   geom_text(hjust=0, vjust=0, size = 3) +
@@ -257,7 +271,7 @@ plot_data <- select(res, id, year, total_water_pred, freshwater_availability, pr
   group_by(id) |> 
   summarise(
     production_mean = production,
-    production_cum = sum(production),
+    production_sum = sum(production),
     total_water_trend = lm(total_water_pred ~ year)$coefficients[2],
     freshwater_availability_trend = unique(freshwater_availability)) |>
   mutate(
@@ -268,18 +282,28 @@ plot_data <- select(res, id, year, total_water_pred, freshwater_availability, pr
       total_water_trend >= 0 & freshwater_availability_trend < 0 ~ "Q4",
       TRUE ~ NA_character_
     )
+  ) |>
+  filter(!is.na(quadrant))
+
+prod_summary <- group_by(plot_data, quadrant) |>
+  summarise(production_sum = sum(production_sum, na.rm = TRUE) / 1e6) |>
+  mutate(
+    production_perc = production_sum / sum(production_sum) * 100,
+    prod_text = paste0(quadrant, ": ", sprintf("%.1f", production_sum), " Mt (", sprintf("%.1f", production_perc), "%)")
   )
 
-ggplot(plot_data, aes(x = total_water_trend, y = freshwater_availability_trend, size = production_mean, color = quadrant)) + 
+
+ggplot(plot_data, aes(x = total_water_trend, y = freshwater_availability_trend, size = production_sum, color = quadrant)) + 
   geom_point(alpha = 0.2) + # Adjust alpha for visibility
   geom_vline(xintercept = 0, linetype = "solid", color = "black", size = 1) + # Thicker line for x = 0
   geom_hline(yintercept = 0, linetype = "solid", color = "black", size = 1) + # Thicker line for y = 0
   scale_size(range = c(1, 12)) + # Adjust the size range as needed
   scale_color_manual(values = c("Q1" = "blue", "Q2" = "green", "Q3" = "red", "Q4" = "purple")) + # Custom colors for each quadrant
-  geom_text(x =  5000, y =  1.0, label = "Q1: sum (percentage)", color = "black", size = 5) +
-  geom_text(x = -5000, y =  1.0, label = "Q2: sum (percentage)", color = "black", size = 5) +
-  geom_text(x = -5000, y = -1.5, label = "Q3: sum (percentage)", color = "black", size = 5) +
-  geom_text(x =  5000, y = -1.5, label = "Q4: sum (percentage)", color = "black", size = 5) +
+  geom_text(x =  5000, y =  1.0, label = prod_summary$prod_text[1], color = "black", size = 5) +
+  geom_text(x = -5000, y =  1.0, label = prod_summary$prod_text[2], color = "black", size = 5) +
+  geom_text(x = -5000, y = -1.5, label = prod_summary$prod_text[3], color = "black", size = 5) +
+  geom_text(x =  5000, y = -1.5, label = prod_summary$prod_text[4], color = "black", size = 5) +
+  guides(color = FALSE) +
   theme_minimal()
   
 select(res, year, production, freshwater_availability, total_water_pred) |> 
