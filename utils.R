@@ -127,12 +127,7 @@ calc_slope <- function(x) {
     }
 }
 
-
-predict_intervals_rf <- function(object, newdata, na.action = na.omit, alpha = 0.05){
-
-  # alpha = 0.05 for a 95% prediction interval
-  out_data <- newdata
-
+prepare_new_data <- function(object, newdata, na.action = na.omit){
   newdata <- as.data.frame(newdata)
   rn <- row.names(newdata)
   Terms <- delete.response(object$terms)
@@ -142,6 +137,15 @@ predict_intervals_rf <- function(object, newdata, na.action = na.omit, alpha = 0
   newdata <- model.matrix(Terms, m, contrasts = object$contrasts)
   xint <- match("(Intercept)", colnames(newdata), nomatch = 0)
   if (xint > 0) newdata <- newdata[, -xint, drop = FALSE]
+  newdata
+}
+
+predict_intervals_rf <- function(object, newdata, alpha = 0.05){
+
+  # alpha = 0.05 for a 95% prediction interval
+
+  out_data <- newdata
+  newdata <- prepare_new_data(object, newdata)
 
   preds <- predict(object$finalModel, newdata, predict.all = TRUE)
   prediction_sd <- apply(preds$individual, 1, sd)
@@ -158,21 +162,12 @@ predict_intervals_rf <- function(object, newdata, na.action = na.omit, alpha = 0
 
 }
 
-
 predict_intervals_lm <- function(object, newdata, alpha = 0.05){
 
   # alpha = 0.05 for a 95% prediction interval
-  out_data <- newdata
 
-  newdata <- as.data.frame(newdata)
-  rn <- row.names(newdata)
-  Terms <- delete.response(object$terms)
-  m <- model.frame(Terms, newdata, na.action = na.action, xlev = object$xlevels)
-  if (!is.null(cl <- attr(Terms, "dataClasses")))  .checkMFClasses(cl, m)
-  keep <- match(row.names(m), rn)
-  newdata <- model.matrix(Terms, m, contrasts = object$contrasts)
-  xint <- match("(Intercept)", colnames(newdata), nomatch = 0)
-  if (xint > 0) newdata <- newdata[, -xint, drop = FALSE]
+  out_data <- newdata
+  newdata <- prepare_new_data(object, newdata)
 
   fit <- predict(object$finalModel, newdata = as.data.frame(newdata), se.fit = TRUE, interval = "prediction", level = 0.95)
   
@@ -183,42 +178,82 @@ predict_intervals_lm <- function(object, newdata, alpha = 0.05){
   # Compute prediction intervals
   t_value <- qt(1 - alpha/2, df = object$finalModel$df.residual)  # T-distribution critical value
 
-  lower_bound <- prediction_fit - t_value * pred_se
-  upper_bound <- prediction_fit + t_value * pred_se
+  lower_bound <- pred - t_value * pred_se
+  upper_bound <- pred + t_value * pred_se
 
   data.frame(out_data,
-    predicted = prediction_fit,
+    predicted = pred,
     lower = lower_bound,
     upper = upper_bound) |> as_tibble()
 
 }
 
-##### TODO: 
-propagate_pred_intervals <- function(m, pred_int, n = 1000){
 
-  # Prepare storage for simulated LM outputs
-  simulated_lm_outputs <- vector("list", length = length(pred_int$predicted))
+propagate_pred_intervals <- function(lm_m, rf_m, newdata, n = 1000){
 
-  # Perform simulations
-  for (i in seq_along(rf_predictions)) {
-    # Simulate inputs assuming a normal distribution for simplicity
-    simulated_inputs <- rnorm(n, mean = rf_predictions[i], 
-                              sd = (rf_upper[i] - rf_lower[i]) / (2 * qnorm(0.975)))
-    
-    # Predict using LM model
-    simulated_lm_outputs[[i]] <- predict(lm_model, newdata = data.frame(predictor = simulated_inputs))
+  out_data <- newdata
+  newdata <- prepare_new_data(rf_m, newdata)
+
+  # Sample from RF prediction distribution
+  rf_preds <- predict(rf_m$finalModel, newdata, predict.all = TRUE)$individual
+  rf_preds_sampled <- apply(rf_preds, 1, function(x) sample(x, size = n))
+  
+  # Predict lm 
+  lm_pred_fun <- function(x){
+    df <- prepare_new_data(object = lm_m, newdata = data.frame(raw_water = x)) |> as.data.frame()
+    predict(lm_m, newdata = df)
   }
 
-  # Calculate summary statistics for each set of simulations
-  lm_predictions <- sapply(simulated_lm_outputs, mean)
-  lm_lower <- sapply(simulated_lm_outputs, function(x) quantile(x, 0.025))
-  lm_upper <- sapply(simulated_lm_outputs, function(x) quantile(x, 0.975))
+  simulated_lm_outputs <- apply(rf_preds_sampled, 2, lm_pred_fun)
 
   # Combine into a dataframe
-  prediction_intervals_lm <- data.frame(
-    Prediction = lm_predictions,
-    Lower = lm_lower,
-    Upper = lm_upper
-  )
+  data.frame(
+    predicted = apply(simulated_lm_outputs, 1, mean),
+    lower = apply(simulated_lm_outputs, 1, function(x) quantile(x, 0.025)),
+    upper = apply(simulated_lm_outputs, 1, function(x) quantile(x, 0.975))
+  ) |> as_tibble()
 
 } 
+
+propagate_pred_error <- function(lm_m, rf_m, newdata, n = 1000){
+
+  out_data <- newdata
+  
+  # Prepare new data for RF model
+  prepared_new_data <- prepare_new_data(rf_m, newdata)
+
+  # Get RF predictions and their distribution across trees
+  rf_preds <- predict(rf_m$finalModel, prepared_new_data, predict.all = TRUE)
+  
+  # Simulate inputs based on RF distribution, generate outputs and intervals from LM
+  lm_results <- lapply(1:n, function(i){
+    # Sample once per observation across RF's tree predictions
+    sampled_rf_outputs <- apply(rf_preds$individual, 1, function(x) sample(x, size = 1))
+
+    # Predict using LM and calculate prediction intervals
+    lm_input <- prepare_new_data(lm_m, data.frame(raw_water = sampled_rf_outputs)) |> as.data.frame()
+    
+    #predict(lm_m$finalModel, newdata = lm_input, se.fit = TRUE, interval = "prediction", level = 0.95)
+    predict_intervals_lm(lm_m, lm_input)[, c("predicted", "lower", "upper")]
+  })
+  
+  # Aggregating the results
+  lm_aggregated_pred <- do.call(cbind, lapply(lm_results, function(x) x$predicted))
+  lm_aggregated_lwr <- do.call(cbind, lapply(lm_results, function(x) x$lower))
+  lm_aggregated_upp <- do.call(cbind, lapply(lm_results, function(x) x$upper))
+
+  # Calculate mean and quantiles for each observation
+  predictions <- apply(lm_aggregated_pred, 1, mean)
+  lower_bounds <- apply(lm_aggregated_lwr, 1, function(x) quantile(x, 0.025))
+  upper_bounds <- apply(lm_aggregated_upp, 1, function(x) quantile(x, 0.975))
+
+  # Combine into a dataframe
+  data.frame(
+    out_data,
+    predict_intervals_lm(lm_m, prepare_new_data(lm_m, data.frame(raw_water = rf_preds$aggregate))),
+    predicted_mean = predictions,
+    lower_propagated = lower_bounds,
+    upper_propagated = upper_bounds
+  ) |> as_tibble()
+
+}

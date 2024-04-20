@@ -1,5 +1,6 @@
 # load dependencies
 source("utils.R")
+set.seed(9526)
 
 ################################################################################
 ### Raw water
@@ -22,6 +23,9 @@ tw_model <- readRDS("./results/tw_models_20240411.rds")$lm_0
 tw_pred_data <- select(rw_pred, id, year, raw_water = predicted)
 
 tw_pred <- predict_intervals_lm(tw_model, tw_pred_data)
+
+pre_erro <- propagate_pred_error(tw_model, rw_model, rw_pred_data, n = 1000)
+
 
 ##### TODO: 
 # propagate_pred_intervals 
