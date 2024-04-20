@@ -3,7 +3,7 @@ source("utils.R")
 
 ################################################################################
 ### Raw water
-rw_model <- readRDS("./results/rw_models_20240411.rds")$rf_6
+rw_model <- readRDS("./results/rw_models_20240419.rds")$rf_6
 
 ts_data <- as_tibble(read.csv2("./data/ts_data_raw.csv"))
 
@@ -21,4 +21,7 @@ tw_model <- readRDS("./results/tw_models_20240411.rds")$lm_0
 
 tw_pred_data <- select(rw_pred, id, year, raw_water = predicted)
 
-#### TODO: implement pred intervals lm models 
+tw_pred <- predict_intervals_lm(tw_model, tw_pred_data)
+
+##### TODO: 
+# propagate_pred_intervals 

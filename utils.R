@@ -151,7 +151,74 @@ predict_intervals_rf <- function(object, newdata, na.action = na.omit, alpha = 0
   lower_bound <- preds$aggregate - z_value * prediction_sd
   upper_bound <- preds$aggregate + z_value * prediction_sd
 
-  data.frame(out_data, predicted = preds$aggregate, lower = lower_bound, upper = upper_bound) |>
-    as_tibble()
+  data.frame(out_data, 
+    predicted = preds$aggregate,
+    lower = lower_bound,
+    upper = upper_bound) |> as_tibble()
 
 }
+
+
+predict_intervals_lm <- function(object, newdata, alpha = 0.05){
+
+  # alpha = 0.05 for a 95% prediction interval
+  out_data <- newdata
+
+  newdata <- as.data.frame(newdata)
+  rn <- row.names(newdata)
+  Terms <- delete.response(object$terms)
+  m <- model.frame(Terms, newdata, na.action = na.action, xlev = object$xlevels)
+  if (!is.null(cl <- attr(Terms, "dataClasses")))  .checkMFClasses(cl, m)
+  keep <- match(row.names(m), rn)
+  newdata <- model.matrix(Terms, m, contrasts = object$contrasts)
+  xint <- match("(Intercept)", colnames(newdata), nomatch = 0)
+  if (xint > 0) newdata <- newdata[, -xint, drop = FALSE]
+
+  fit <- predict(object$finalModel, newdata = as.data.frame(newdata), se.fit = TRUE, interval = "prediction", level = 0.95)
+  
+  # Extract standard errors
+  pred <- fit$fit[,'fit']
+  pred_se <- fit$se.fit
+
+  # Compute prediction intervals
+  t_value <- qt(1 - alpha/2, df = object$finalModel$df.residual)  # T-distribution critical value
+
+  lower_bound <- prediction_fit - t_value * pred_se
+  upper_bound <- prediction_fit + t_value * pred_se
+
+  data.frame(out_data,
+    predicted = prediction_fit,
+    lower = lower_bound,
+    upper = upper_bound) |> as_tibble()
+
+}
+
+##### TODO: 
+propagate_pred_intervals <- function(m, pred_int, n = 1000){
+
+  # Prepare storage for simulated LM outputs
+  simulated_lm_outputs <- vector("list", length = length(pred_int$predicted))
+
+  # Perform simulations
+  for (i in seq_along(rf_predictions)) {
+    # Simulate inputs assuming a normal distribution for simplicity
+    simulated_inputs <- rnorm(n, mean = rf_predictions[i], 
+                              sd = (rf_upper[i] - rf_lower[i]) / (2 * qnorm(0.975)))
+    
+    # Predict using LM model
+    simulated_lm_outputs[[i]] <- predict(lm_model, newdata = data.frame(predictor = simulated_inputs))
+  }
+
+  # Calculate summary statistics for each set of simulations
+  lm_predictions <- sapply(simulated_lm_outputs, mean)
+  lm_lower <- sapply(simulated_lm_outputs, function(x) quantile(x, 0.025))
+  lm_upper <- sapply(simulated_lm_outputs, function(x) quantile(x, 0.975))
+
+  # Combine into a dataframe
+  prediction_intervals_lm <- data.frame(
+    Prediction = lm_predictions,
+    Lower = lm_lower,
+    Upper = lm_upper
+  )
+
+} 
