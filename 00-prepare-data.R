@@ -2,7 +2,7 @@ source("utils.R")
 
 # Global copper mines - this dataset is not provided due to copyright restrictions
 raw_data <- read_excel('./data/Copper data for analysis_20240503.xlsx') |> 
-  dplyr::mutate(id_mine = row_number())
+  dplyr::mutate(id_mine = row_number()) 
 
 ### Add GRACE - Trends in Global Freshwater Availability from the Gravity Recovery and Climate Experiment (GRACE), v1 (2002 – 2016)
 #   Rodell, M., J. S. Famiglietti, D. N. Wiese, J. T. Reager, H. K. Beaudoing, F. W. Landerer, and M.-H. Lo. 2019. Trends in Global Freshwater Availability from the Gravity Recovery and Climate Experiment (GRACE). Palisades, New York: NASA Socioeconomic Data and Applications Center (SEDAC). https://doi.org/10.7927/H4TT4P2C.
@@ -107,7 +107,8 @@ ts_data <- select(raw_data, id_mine, `2015`, `2016`, `2017`, `2018`, `2019`, ToW
          ore_body_group = tolower(as.character(ore_body_group)),
          mine_type = ifelse(mine_type=="open pit", "pit", mine_type),
          byproduct_group = tolower(ifelse(byproduct_group == "CuCu", "CuNN", byproduct_group)),
-         process_route = tolower(ifelse(process_route == "other", NA, process_route))) |>
+         process_route = tolower(ifelse(process_route == "other", NA, process_route)),
+         average_production = ifelse(average_production==0,NA,average_production)) |>
   dplyr::mutate(id = row_number()) |>
   relocate(id, .before = id_mine)
 
@@ -170,21 +171,15 @@ dev.off()
 write_csv2(ts_data, "./data/ts_data_raw.csv")
 st_write(sf_data, "./data/sf_data_raw.gpkg", delete_dsn = TRUE)
 
-# Prepare model data
-model_data <- ts_data |>
-  drop_na(c(production, ore_grade, mine_type, byproduct_group, process_route)) |>
-  select(id, raw_water, total_water, production, ore_grade, mine_type, byproduct_group, process_route)
-
-write_csv2(model_data, "./data/ts_model_data.csv")
-
 # Fill predictors gaps using knn
-pred_data <- select(ts_data, id, production, total_water, raw_water, country_code, region, cumulative_production, average_production, byproduct_group, mine_type, ore_body_group, process_route, ore_grade) |>
+pred_data <- select(ts_data, id, production, total_water, raw_water, country_code, region, cumulative_production, average_production, byproduct_group, mine_type, ore_body_group, process_route, ore_grade, et0_annual) |>
   mutate_if(is.character, as.factor)
+
 pred_data <- recipe(raw_water + total_water ~ ., data = pred_data) |>
-  step_impute_knn(any_of(c("production", "ore_grade", "mine_type", "byproduct_group", "process_route")), impute_with = imp_vars(-any_of(c("id"))), neighbors = 5,) |>
+  step_impute_knn(any_of(c("production", "average_production", "ore_grade", "mine_type", "byproduct_group", "process_route", "et0_annual")), impute_with = imp_vars(-any_of(c("id"))), neighbors = 5,) |>
   prep() |>
   bake(pred_data) |> 
-  select(id, raw_water, total_water, production, ore_grade, mine_type, byproduct_group, process_route)
+  select(id, raw_water, total_water, production, average_production, ore_grade, mine_type, byproduct_group, process_route, et0_annual)
 
 write_csv2(pred_data, "./data/ts_pred_data.csv")
 

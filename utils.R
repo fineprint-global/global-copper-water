@@ -19,6 +19,7 @@ library(RANN)
 library(gridExtra)
 library(lattice)
 library(recipes)
+library(Metrics)
 
 dir.create("./data", showWarnings = FALSE, recursive = TRUE)
 dir.create("./results", showWarnings = FALSE, recursive = TRUE)
@@ -143,21 +144,34 @@ prepare_new_data <- function(object, newdata, na.action = na.omit){
   predict(object$preProcess, newdata)
 }
 
-predict_intervals_rf <- function(object, df, alpha = 0.05){
+predict_intervals_rf <- function(object, df, alpha = 0.05, log_base = NULL){
 
   # alpha = 0.05 for a 95% prediction interval
-  preds <- predict(object$finalModel, newdata = bake(prep(object$recipe), df), predict.all = TRUE)
-  prediction_sd <- apply(preds$individual, 1, sd)
+  pred_data <- bake(prep(object$recipe), df) |>
+    drop_na(any_of(prep(object$recipe)$term_info$variable[prep(object$recipe)$term_info$role=="predictor"])) |>
+    select(-prep(object$recipe)$term_info$variable[prep(object$recipe)$term_info$role=="outcome"])
 
-  alpha <- alpha 
-  z_value <- qnorm(1 - alpha / 2)
-  lower_bound <- preds$aggregate - z_value * prediction_sd
-  upper_bound <- preds$aggregate + z_value * prediction_sd
+  preds <- predict(object$finalModel, newdata = pred_data, predict.all = TRUE)
+
+  if (is.null(log_base)) {
+    prediction <- preds$aggregate
+    prediction_sd <- apply(preds$individual, 1, sd)
+  } else {
+    prediction <- log_base^preds$aggregate
+    prediction_sd <- apply(preds$individual, 1, function(x) sd(log_base^x))
+  }
 
   data.frame(
-    predicted = preds$aggregate,
-    lower = lower_bound,
-    upper = upper_bound) |> as_tibble()
+    predicted = prediction,
+    lower = pmax(prediction - qnorm(1 - alpha / 2) * prediction_sd, 0),
+    upper = prediction + qnorm(1 - alpha / 2) * prediction_sd) |> 
+    as_tibble() |>
+    dplyr::mutate(individual = lapply(1:nrow(preds$individual), function(i) 
+        if (is.null(log_base)) {
+          preds$individual[i,,drop=TRUE]
+        } else { 
+          log_base^preds$individual[i,,drop=TRUE]
+        })) 
 
 }
 
@@ -182,53 +196,48 @@ predict_intervals_lm <- function(object, df, alpha = 0.05){
 
 }
 
-propagate_pred_error <- function(lm_m, rf_m, df, n = 100, alpha = 0.05){
+propagate_pred_error_rf <- function(rf1, rf2, df, n = 100, alpha = 0.05, rf1_log_base = NULL, rf2_log_base = NULL){
 
-  rw_preds <- predict(rf_m$finalModel, newdata = select(bake(prep(rf_m$recipe), df), -raw_water), predict.all = TRUE)
-  rw_prediction_sd <- apply(rw_preds$individual, 1, sd)
 
-  alpha <- alpha 
-  z_value <- qnorm(1 - alpha / 2)
-  rw_lower_bound <- rw_preds$aggregate - z_value * rw_prediction_sd
-  rw_upper_bound <- rw_preds$aggregate + z_value * rw_prediction_sd
+  rf1_preds <- predict_intervals_rf(object = rf1, df, alpha = alpha, log_base = rf1_log_base)
   
   # Simulate inputs based on RF distribution, generate outputs and intervals from LM
   # To predict total water use known raw_water and fill gaps with raw_water predictions
   # It error propagates oly for points where raw_water is predicted otherwise the error is only due to the total water model uncertainty
-  lm_results <- lapply(1:n, function(i){
+  rf2_results <- lapply(1:n, function(i){
 
     # Sample once per observation across RF's tree predictions
-    sampled_rf_outputs <- apply(rw_preds$individual, 1, function(x) sample(x, size = 1))
-
+    sampled_rf1_outputs <- sapply(rf1_preds$individual, function(x) sample(x, size = 1))
+    
     # Update df with predicted raw_water
-    tw_pred_data <- df |>
-      mutate(rw_pred = sampled_rf_outputs, raw_water = ifelse(is.na(raw_water), rw_pred, raw_water)) |>
-      select(-rw_pred)
+    pred_data <- df |>
+      dplyr::mutate(rf1_pred = sampled_rf1_outputs, raw_water = ifelse(is.na(raw_water), rf1_pred, raw_water)) |>
+      dplyr::select(-rf1_pred)
 
-    # Predict using LM and calculate prediction intervals
-    predict_intervals_lm(lm_m, tw_pred_data)[, c("predicted", "lower", "upper")]
+    predict_intervals_rf(object = rf2, pred_data, alpha = alpha, log_base = rf2_log_base) |>
+      dplyr::select(predicted, lower, upper)
 
   })
   
   # Aggregating the results
-  lm_aggregated_pred <- do.call(cbind, lapply(lm_results, function(x) x$predicted))
-  lm_aggregated_lwr <- do.call(cbind, lapply(lm_results, function(x) x$lower))
-  lm_aggregated_upp <- do.call(cbind, lapply(lm_results, function(x) x$upper))
+  rf2_aggregated_pred <- do.call(cbind, lapply(rf2_results, function(x) x$predicted))
+  rf2_aggregated_lwr <- do.call(cbind, lapply(rf2_results, function(x) x$lower))
+  rf2_aggregated_upp <- do.call(cbind, lapply(rf2_results, function(x) x$upper))
 
   # Calculate mean and quantiles for each observation
-  predictions <- apply(lm_aggregated_pred, 1, mean)
-  lower_bounds <- apply(lm_aggregated_lwr, 1, function(x) quantile(x, 0.025, na.rm = TRUE))
-  upper_bounds <- apply(lm_aggregated_upp, 1, function(x) quantile(x, 0.975, na.rm = TRUE))
+  predictions <- apply(rf2_aggregated_pred, 1, mean)
+  lower_bounds <- apply(rf2_aggregated_lwr, 1, function(x) quantile(x, 0.025, na.rm = TRUE))
+  upper_bounds <- apply(rf2_aggregated_upp, 1, function(x) quantile(x, 0.975, na.rm = TRUE))
 
   # Combine into a dataframe
   data.frame(
     df,
-    rw_pred = rw_preds$aggregate,
-    rw_lw = rw_lower_bound,
-    rw_up = rw_upper_bound,
-    tw_pred = predictions,
-    tw_lw = lower_bounds,
-    tw_up = upper_bounds
+    rf1_pred = rf1_preds$predicted,
+    rf1_lw = rf1_preds$lower,
+    rf1_up = rf1_preds$upper,
+    rf2_pred = predictions,
+    rf2_lw = lower_bounds,
+    rf2_up = upper_bounds
   ) |> as_tibble()
 
 }
@@ -238,6 +247,25 @@ predict_transform <- function(m, newdata) {
   if ( str_detect(all.vars(formula(m))[1], "log1p") ) return(expm1(predict(m, newdata)))
   return(predict(m, newdata))
 }
+
+summary_metrics_inverse_log <- function(data, lev = NULL, model = NULL) {
+  
+  # Exponentiate the predictions and observed values using base 10
+  exp_pred <- 10^data$pred
+  exp_obs <- 10^data$obs
+  
+  # Calculate RMSE and MAE on the original scale
+  rmse_val <- sqrt(mean((exp_obs - exp_pred)^2))
+  mae_val <- mean(abs(exp_obs - exp_pred))
+  r2_val <- cor(exp_obs, exp_pred)^2
+  
+  # Return the metrics
+  out <- c(Rsquared = r2_val, RMSE = rmse_val, MAE = mae_val)
+  return(out)
+
+}
+
+
 
 metrics_log_models <- function(data, lev = NULL, model = NULL) {
 
