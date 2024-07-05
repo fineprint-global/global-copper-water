@@ -16,6 +16,9 @@ library(RSQLite)
 library(DBI)
 library(randomForest)
 library(RANN)
+library(gridExtra)
+library(lattice)
+library(recipes)
 
 dir.create("./data", showWarnings = FALSE, recursive = TRUE)
 dir.create("./results", showWarnings = FALSE, recursive = TRUE)
@@ -137,17 +140,13 @@ prepare_new_data <- function(object, newdata, na.action = na.omit){
   newdata <- model.matrix(Terms, m, contrasts = object$contrasts)
   xint <- match("(Intercept)", colnames(newdata), nomatch = 0)
   if (xint > 0) newdata <- newdata[, -xint, drop = FALSE]
-  newdata
+  predict(object$preProcess, newdata)
 }
 
-predict_intervals_rf <- function(object, newdata, alpha = 0.05){
+predict_intervals_rf <- function(object, df, alpha = 0.05){
 
   # alpha = 0.05 for a 95% prediction interval
-
-  out_data <- newdata
-  newdata <- prepare_new_data(object, newdata)
-
-  preds <- predict(object$finalModel, newdata, predict.all = TRUE)
+  preds <- predict(object$finalModel, newdata = bake(prep(object$recipe), df), predict.all = TRUE)
   prediction_sd <- apply(preds$individual, 1, sd)
 
   alpha <- alpha 
@@ -155,21 +154,16 @@ predict_intervals_rf <- function(object, newdata, alpha = 0.05){
   lower_bound <- preds$aggregate - z_value * prediction_sd
   upper_bound <- preds$aggregate + z_value * prediction_sd
 
-  data.frame(out_data, 
+  data.frame(
     predicted = preds$aggregate,
     lower = lower_bound,
     upper = upper_bound) |> as_tibble()
 
 }
 
-predict_intervals_lm <- function(object, newdata, alpha = 0.05){
+predict_intervals_lm <- function(object, df, alpha = 0.05){
 
-  # alpha = 0.05 for a 95% prediction interval
-
-  out_data <- newdata
-  newdata <- prepare_new_data(object, newdata)
-
-  fit <- predict(object$finalModel, newdata = as.data.frame(newdata), se.fit = TRUE, interval = "prediction", level = 0.95)
+  fit <- predict(object$finalModel, newdata = bake(prep(object$recipe), df), se.fit = TRUE, interval = "prediction", level = 0.95)
   
   # Extract standard errors
   pred <- fit$fit[,'fit']
@@ -181,60 +175,39 @@ predict_intervals_lm <- function(object, newdata, alpha = 0.05){
   lower_bound <- pred - t_value * pred_se
   upper_bound <- pred + t_value * pred_se
 
-  data.frame(out_data,
+  data.frame(df,
     predicted = pred,
     lower = lower_bound,
     upper = upper_bound) |> as_tibble()
 
 }
 
+propagate_pred_error <- function(lm_m, rf_m, df, n = 100, alpha = 0.05){
 
-propagate_pred_intervals <- function(lm_m, rf_m, newdata, n = 1000){
+  rw_preds <- predict(rf_m$finalModel, newdata = select(bake(prep(rf_m$recipe), df), -raw_water), predict.all = TRUE)
+  rw_prediction_sd <- apply(rw_preds$individual, 1, sd)
 
-  out_data <- newdata
-  newdata <- prepare_new_data(rf_m, newdata)
-
-  # Sample from RF prediction distribution
-  rf_preds <- predict(rf_m$finalModel, newdata, predict.all = TRUE)$individual
-  rf_preds_sampled <- apply(rf_preds, 1, function(x) sample(x, size = n))
-  
-  # Predict lm 
-  lm_pred_fun <- function(x){
-    df <- prepare_new_data(object = lm_m, newdata = data.frame(raw_water = x)) |> as.data.frame()
-    predict(lm_m, newdata = df)
-  }
-
-  simulated_lm_outputs <- apply(rf_preds_sampled, 2, lm_pred_fun)
-
-  # Combine into a dataframe
-  data.frame(
-    predicted = apply(simulated_lm_outputs, 1, mean),
-    lower = apply(simulated_lm_outputs, 1, function(x) quantile(x, 0.025)),
-    upper = apply(simulated_lm_outputs, 1, function(x) quantile(x, 0.975))
-  ) |> as_tibble()
-
-} 
-
-propagate_pred_error <- function(lm_m, rf_m, newdata, n = 1000){
-
-  out_data <- newdata
-  
-  # Prepare new data for RF model
-  prepared_new_data <- prepare_new_data(rf_m, newdata)
-
-  # Get RF predictions and their distribution across trees
-  rf_preds <- predict(rf_m$finalModel, prepared_new_data, predict.all = TRUE)
+  alpha <- alpha 
+  z_value <- qnorm(1 - alpha / 2)
+  rw_lower_bound <- rw_preds$aggregate - z_value * rw_prediction_sd
+  rw_upper_bound <- rw_preds$aggregate + z_value * rw_prediction_sd
   
   # Simulate inputs based on RF distribution, generate outputs and intervals from LM
+  # To predict total water use known raw_water and fill gaps with raw_water predictions
+  # It error propagates oly for points where raw_water is predicted otherwise the error is only due to the total water model uncertainty
   lm_results <- lapply(1:n, function(i){
+
     # Sample once per observation across RF's tree predictions
-    sampled_rf_outputs <- apply(rf_preds$individual, 1, function(x) sample(x, size = 1))
+    sampled_rf_outputs <- apply(rw_preds$individual, 1, function(x) sample(x, size = 1))
+
+    # Update df with predicted raw_water
+    tw_pred_data <- df |>
+      mutate(rw_pred = sampled_rf_outputs, raw_water = ifelse(is.na(raw_water), rw_pred, raw_water)) |>
+      select(-rw_pred)
 
     # Predict using LM and calculate prediction intervals
-    lm_input <- prepare_new_data(lm_m, data.frame(raw_water = sampled_rf_outputs)) |> as.data.frame()
-    
-    #predict(lm_m$finalModel, newdata = lm_input, se.fit = TRUE, interval = "prediction", level = 0.95)
-    predict_intervals_lm(lm_m, lm_input)[, c("predicted", "lower", "upper")]
+    predict_intervals_lm(lm_m, tw_pred_data)[, c("predicted", "lower", "upper")]
+
   })
   
   # Aggregating the results
@@ -244,16 +217,96 @@ propagate_pred_error <- function(lm_m, rf_m, newdata, n = 1000){
 
   # Calculate mean and quantiles for each observation
   predictions <- apply(lm_aggregated_pred, 1, mean)
-  lower_bounds <- apply(lm_aggregated_lwr, 1, function(x) quantile(x, 0.025))
-  upper_bounds <- apply(lm_aggregated_upp, 1, function(x) quantile(x, 0.975))
+  lower_bounds <- apply(lm_aggregated_lwr, 1, function(x) quantile(x, 0.025, na.rm = TRUE))
+  upper_bounds <- apply(lm_aggregated_upp, 1, function(x) quantile(x, 0.975, na.rm = TRUE))
 
   # Combine into a dataframe
   data.frame(
-    out_data,
-    predict_intervals_lm(lm_m, prepare_new_data(lm_m, data.frame(raw_water = rf_preds$aggregate))),
-    predicted_mean = predictions,
-    lower_propagated = lower_bounds,
-    upper_propagated = upper_bounds
+    df,
+    rw_pred = rw_preds$aggregate,
+    rw_lw = rw_lower_bound,
+    rw_up = rw_upper_bound,
+    tw_pred = predictions,
+    tw_lw = lower_bounds,
+    tw_up = upper_bounds
   ) |> as_tibble()
 
 }
+
+predict_transform <- function(m, newdata) {
+  if ( str_detect(all.vars(formula(m))[1], "log") ) return(exp(predict(m, newdata)))
+  if ( str_detect(all.vars(formula(m))[1], "log1p") ) return(expm1(predict(m, newdata)))
+  return(predict(m, newdata))
+}
+
+metrics_log_models <- function(data, lev = NULL, model = NULL) {
+
+    # Calculate default summary statistics (MAE, RMSE, R^2)
+    stats <- defaultSummary(data.frame(obs = exp(data$obs), pred = exp(data$pred)))
+
+    # Return all the stats; RMSE will be used for optimization if specified in trainControl
+    return(stats)
+}
+
+metrics_log1p_models <- function(data, lev = NULL, model = NULL) {
+
+    # Calculate default summary statistics (MAE, RMSE, R^2)
+    stats <- defaultSummary(data.frame(obs = expm1(data$obs), pred = expm1(data$pred)))
+
+    # Return all the stats; RMSE will be used for optimization if specified in trainControl
+    return(stats)
+}
+
+get_resamples_stats <- function(models) {
+  resamps <- resamples(models)
+  resamps_stats <- summary(resamps)$statistics
+  resamps_stats <- do.call("rbind", lapply(names(resamps_stats), function(i) data.frame(Metric = i, Model = row.names(resamps_stats[[i]]), resamps_stats[[i]][,-7])))
+  rownames(resamps_stats) <- NULL
+  return(resamps_stats)
+}
+
+plot_models_performance <- function(models){
+  resamps <- resamples(models)
+  theme1 <- trellis.par.get()
+  theme1$plot.symbol$col = rgb(.2, .2, .2, .4)
+  theme1$plot.symbol$pch = 16
+  theme1$plot.line$col = rgb(1, 0, 0, .7)
+  theme1$plot.line$lwd <- 2
+  trellis.par.set(theme1)
+  bwplot(resamps, layout = c(3, 1), scales = list(x = "free"), strip = strip.custom(factor.levels = c("RMSE", "MAE", "Rsquared")))
+}
+
+round_numeric_columns <- function(df, digits) {
+  mutate(df, across(where(is.numeric), ~ format(round(., digits), scientific = FALSE)))
+}
+
+custom_preprocess <- function(data, method = c("center", "scale", "nzv")) {
+
+  # Identify numeric columns
+  numeric_columns <- sapply(data, is.numeric)
+  
+  # Apply preprocessing to the numeric columns
+  pre_process <- preProcess(data[, numeric_columns], method = method)
+  data[, numeric_columns] <- predict(pre_process, data[, numeric_columns])
+
+  # Create dummy variables from factors
+  data <- dummyVars(~ ., data = data, fullRank = TRUE) |>
+    predict(newdata = data) |>
+    as_tibble()
+  
+  return(data)
+
+}
+
+# Define the function to create stratified bootstrapped indices
+createStratifiedBootstrap <- function(data, strat_var, n) {
+  strata <- unique(data[[strat_var]])
+  boot_indices <- lapply(1:n, function(i) {
+    unlist(lapply(strata, function(s) {
+      idx <- which(data[[strat_var]] == s)
+      sample(idx, length(idx), replace = TRUE)
+    }))
+  })
+  return(boot_indices)
+}
+
