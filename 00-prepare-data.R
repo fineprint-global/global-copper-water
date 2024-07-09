@@ -172,13 +172,17 @@ write_csv2(ts_data, "./data/ts_data_raw.csv")
 st_write(sf_data, "./data/sf_data_raw.gpkg", delete_dsn = TRUE)
 
 # Fill predictors gaps using knn
-pred_data <- select(ts_data, id, production, total_water, raw_water, country_code, region, cumulative_production, average_production, byproduct_group, mine_type, ore_body_group, process_route, ore_grade, et0_annual) |>
-  mutate_if(is.character, as.factor)
+pred_data <- select(ts_data, id, id_mine, production, total_water, raw_water, country_code, region, cumulative_production, average_production, byproduct_group, mine_type, ore_body_group, process_route, ore_grade, et0_annual) |>
+  mutate_if(is.character, as.factor) |>
+  dplyr::mutate(id_mine = factor(id_mine))
 
 pred_data <- recipe(raw_water + total_water ~ ., data = pred_data) |>
-  step_impute_knn(any_of(c("production", "average_production", "ore_grade", "mine_type", "byproduct_group", "process_route", "et0_annual")), impute_with = imp_vars(-any_of(c("id"))), neighbors = 5,) |>
+  step_impute_knn(any_of(c("production", "ore_grade", "mine_type", "byproduct_group", "process_route", "et0_annual")), impute_with = imp_vars(-any_of(c("id"))), neighbors = 5,) |>
   prep() |>
   bake(pred_data) |> 
+  dplyr::group_by(id_mine) |>
+  dplyr::mutate(average_production = ifelse(is.na(average_production), mean(production, na.rm = TRUE), average_production)) |>
+  dplyr::ungroup() |>
   select(id, raw_water, total_water, production, average_production, ore_grade, mine_type, byproduct_group, process_route, et0_annual)
 
 write_csv2(pred_data, "./data/ts_pred_data.csv")

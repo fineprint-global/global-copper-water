@@ -144,9 +144,8 @@ prepare_new_data <- function(object, newdata, na.action = na.omit){
   predict(object$preProcess, newdata)
 }
 
-predict_intervals_rf <- function(object, df, alpha = 0.05, log_base = NULL){
+predict_intervals_rf <- function(object, df, log_base = NULL, individuals = FALSE){
 
-  # alpha = 0.05 for a 95% prediction interval
   pred_data <- bake(prep(object$recipe), df) |>
     drop_na(any_of(prep(object$recipe)$term_info$variable[prep(object$recipe)$term_info$role=="predictor"])) |>
     select(-prep(object$recipe)$term_info$variable[prep(object$recipe)$term_info$role=="outcome"])
@@ -161,83 +160,66 @@ predict_intervals_rf <- function(object, df, alpha = 0.05, log_base = NULL){
     prediction_sd <- apply(preds$individual, 1, function(x) sd(log_base^x))
   }
 
-  data.frame(
-    predicted = prediction,
-    lower = pmax(prediction - qnorm(1 - alpha / 2) * prediction_sd, 0),
-    upper = prediction + qnorm(1 - alpha / 2) * prediction_sd) |> 
-    as_tibble() |>
-    dplyr::mutate(individual = lapply(1:nrow(preds$individual), function(i) 
+  out <- tibble(predicted = prediction, predicted_sd = prediction_sd) 
+
+  if (individuals) {
+    out$individual <- lapply(1:nrow(preds$individual), function(i) 
         if (is.null(log_base)) {
           preds$individual[i,,drop=TRUE]
         } else { 
           log_base^preds$individual[i,,drop=TRUE]
-        })) 
+        })
+  }
+
+  return(out) 
 
 }
 
-predict_intervals_lm <- function(object, df, alpha = 0.05){
+propagate_pred_error_rf <- function(rf1, rf2, df, n = 100, rf1_log_base = NULL, rf2_log_base = NULL){
 
-  fit <- predict(object$finalModel, newdata = bake(prep(object$recipe), df), se.fit = TRUE, interval = "prediction", level = 0.95)
-  
-  # Extract standard errors
-  pred <- fit$fit[,'fit']
-  pred_se <- fit$se.fit
-
-  # Compute prediction intervals
-  t_value <- qt(1 - alpha/2, df = object$finalModel$df.residual)  # T-distribution critical value
-
-  lower_bound <- pred - t_value * pred_se
-  upper_bound <- pred + t_value * pred_se
-
-  data.frame(df,
-    predicted = pred,
-    lower = lower_bound,
-    upper = upper_bound) |> as_tibble()
-
-}
-
-propagate_pred_error_rf <- function(rf1, rf2, df, n = 100, alpha = 0.05, rf1_log_base = NULL, rf2_log_base = NULL){
-
-
-  rf1_preds <- predict_intervals_rf(object = rf1, df, alpha = alpha, log_base = rf1_log_base)
-  
   # Simulate inputs based on RF distribution, generate outputs and intervals from LM
   # To predict total water use known raw_water and fill gaps with raw_water predictions
   # It error propagates oly for points where raw_water is predicted otherwise the error is only due to the total water model uncertainty
+  rf1_preds <- predict_intervals_rf(object = rf1, df)
+
+  # Extract the name of the independent variable
+  rf1_independent_var <- rf1$recipe$term_info |> 
+    filter(role == "outcome") |> 
+    pull(variable)
+
   rf2_results <- lapply(1:n, function(i){
 
     # Sample once per observation across RF's tree predictions
-    sampled_rf1_outputs <- sapply(rf1_preds$individual, function(x) sample(x, size = 1))
-    
-    # Update df with predicted raw_water
-    pred_data <- df |>
-      dplyr::mutate(rf1_pred = sampled_rf1_outputs, raw_water = ifelse(is.na(raw_water), rf1_pred, raw_water)) |>
-      dplyr::select(-rf1_pred)
+    #sampled_rf1_outputs <- sapply(rf1_preds$individual, sample, size = 1)
+    sampled_rf1_outputs <- rnorm(nrow(df), rf1_preds$predicted, rf1_preds$predicted_sd)
+    if (!is.null(rf1_log_base)){
+      sampled_rf1_outputs <- rf1_log_base^sampled_rf1_outputs
+    }
 
-    predict_intervals_rf(object = rf2, pred_data, alpha = alpha, log_base = rf2_log_base) |>
-      dplyr::select(predicted, lower, upper)
+    # Update df with predicted raw_water
+    pred_data <- df
+    pred_data[[rf1_independent_var]] <- ifelse(is.na(pred_data[[rf1_independent_var]]), sampled_rf1_outputs, pred_data[[rf1_independent_var]])
+
+    predict_intervals_rf(object = rf2, pred_data, log_base = rf2_log_base) |>
+      dplyr::select(predicted, predicted_sd)
 
   })
   
   # Aggregating the results
   rf2_aggregated_pred <- do.call(cbind, lapply(rf2_results, function(x) x$predicted))
-  rf2_aggregated_lwr <- do.call(cbind, lapply(rf2_results, function(x) x$lower))
-  rf2_aggregated_upp <- do.call(cbind, lapply(rf2_results, function(x) x$upper))
+  rf2_aggregated_sd <- do.call(cbind, lapply(rf2_results, function(x) x$predicted_sd))
 
   # Calculate mean and quantiles for each observation
   predictions <- apply(rf2_aggregated_pred, 1, mean)
-  lower_bounds <- apply(rf2_aggregated_lwr, 1, function(x) quantile(x, 0.025, na.rm = TRUE))
-  upper_bounds <- apply(rf2_aggregated_upp, 1, function(x) quantile(x, 0.975, na.rm = TRUE))
+  predicted_sd <- apply(rf2_aggregated_sd, 1, function(x) quantile(x, 0.025, na.rm = TRUE))
 
   # Combine into a dataframe
   data.frame(
     df,
     rf1_pred = rf1_preds$predicted,
-    rf1_lw = rf1_preds$lower,
-    rf1_up = rf1_preds$upper,
+    rf1_sd = rf1_preds$predicted_sd,
     rf2_pred = predictions,
-    rf2_lw = lower_bounds,
-    rf2_up = upper_bounds
+    rf2_sd = predicted_sd
   ) |> as_tibble()
 
 }

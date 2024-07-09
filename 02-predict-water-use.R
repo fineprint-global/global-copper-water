@@ -9,15 +9,41 @@ set.seed(96297)
 rw_model <- read_rds("./results/rw_final_model.rds")
 tw_model <- read_rds("./results/tw_final_model.rds")
 new_data <- read_csv2("./data/ts_pred_data.csv") |>
-    mutate_if(is.character, as.factor)
+    dplyr::mutate_if(is.character, as.factor)
 
-## Predict and propagate prediction error
-predictions <- propagate_pred_error_rf(rf1 = rw_model, rf2 = tw_model, df = new_data, n = 100, alpha = 0.05, rf1_log_base = 10, rf2_log_base = 10) |>
-    dplyr::rename(rw_pred = rf1_pred, tw_pred = rf2_pred, rw_lw = rf1_lw, tw_lw = rf2_lw, rw_up = rf1_up, tw_up = rf2_up)
+## Check error dependency 
+rw_pred <- predict_intervals_rf(rw_model, new_data) |>
+    select(rw_pred = predicted, rw_sd = predicted_sd)
+
+new_data_filled <- new_data
+new_data_filled$raw_water <- ifelse(is.na(new_data_filled$raw_water), rw_pred$rw_pred, new_data_filled$raw_water)
+
+tw_pred <- predict_intervals_rf(tw_model, new_data_filled) |>
+    select(tw_pred = predicted, tw_sd = predicted_sd)
+
+bind_cols(new_data, rw_pred, tw_pred) |>
+    dplyr::mutate(rw_err = rw_pred - log10(raw_water), tw_err = tw_pred - log10(total_water)) |>
+    dplyr::select(rw_err, tw_err) |>
+    drop_na() |>
+    summarise(err_cov = cov(rw_err, tw_err), err_coef = err_cov / (sd(rw_err) * sd(tw_err))) 
+
+# err_coef: from -0.2 to +0.2 very weak or no association - error independency
+rw_pred <- predict_intervals_rf(rw_model, new_data, log_base = 10) |>
+    select(rw_pred = predicted, rw_sd = predicted_sd)
+
+new_data_filled <- new_data
+new_data_filled$raw_water <- ifelse(is.na(new_data_filled$raw_water), rw_pred$rw_pred, new_data_filled$raw_water)
+
+tw_pred <- predict_intervals_rf(tw_model, new_data_filled, log_base = 10) |>
+    select(tw_pred = predicted, tw_sd = predicted_sd)
+
+# Propagate uncertanty assuming error independency err_coef close to zero
+predictions <- bind_cols(new_data, rw_pred, tw_pred) |>
+    dplyr::mutate(tw_sd_prop = ifelse(is.na(new_data$raw_water), sqrt(tw_sd^2 + rw_sd^2), tw_sd))
 
 # Check overall MAE and RMSE against available data points
 predictions |>
-    dplyr::select(id, raw_water, total_water, rw_pred, tw_pred, rw_lw, tw_lw, rw_up, tw_up) |>
+    dplyr::select(id, raw_water, total_water, rw_pred, tw_pred) |>
     mutate(rw_err = raw_water - rw_pred, rw_abs_err = abs(rw_err), rw_squared_err = rw_err^2,
            tw_err = total_water - tw_pred, tw_abs_err = abs(tw_err), tw_squared_err = tw_err^2) |>
     summarise(
@@ -30,9 +56,8 @@ predictions |>
         pivot_longer(cols = everything())
 
 predictions |>
-  select(rw_pred, tw_pred, rw_lw, tw_lw, rw_up, tw_up) |>
-  dplyr::summarise(across(everything(), sum))
-
+  dplyr::transmute(rw_pred, rw_sd, tw_pred, tw_sd) |>
+  dplyr::summarise(across(everything(), sum)*1e-6)
 
 write_csv2(predictions, "./data/final_predictions.csv")
 
