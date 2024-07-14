@@ -20,9 +20,84 @@ library(gridExtra)
 library(lattice)
 library(recipes)
 library(Metrics)
+library(themis)
+library(embed)
+library(patchwork)
 
 dir.create("./data", showWarnings = FALSE, recursive = TRUE)
 dir.create("./results", showWarnings = FALSE, recursive = TRUE)
+
+training_oversampling_quantile <- function(df, outcome, over_ratio = 0.5) {
+
+  # Check initial class distribution
+  Q1 <- quantile(df[[outcome]], 0.25, na.rm = TRUE)
+  Q3 <- quantile(df[[outcome]], 0.75, na.rm = TRUE)
+  IQR <- IQR(df[[outcome]], na.rm = TRUE)
+
+  # Get training data and create quantile distribution classes
+  df <- df %>%
+    mutate(q_class = case_when(
+      df[[outcome]] < (Q1 - 1.5 * IQR) ~ "very_low",
+      df[[outcome]] >= (Q1 - 1.5 * IQR) & df[[outcome]] < Q1 ~ "low",
+      df[[outcome]] >= Q1 & df[[outcome]] < Q3 ~ "medium",
+      df[[outcome]] >= Q3 & df[[outcome]] < (Q3 + 1.5 * IQR) ~ "high",
+      df[[outcome]] >= (Q3 + 1.5 * IQR) ~ "very_high"
+    ))
+
+  # Data augmentation by oversampling underrepresented quantile
+  recipe <- recipe(q_class ~ ., data = df) |>
+    step_smotenc(q_class, over_ratio = over_ratio) |>
+    prep()
+
+  # Return the baked data
+  bake(recipe, new_data = NULL)
+}
+
+training_oversampling_quantile <- function(df, outcome, over_ratio = 0.5) {
+
+  # Check initial class distribution
+  Q1 <- quantile(df[[outcome]], 0.25, na.rm = TRUE)
+  Q3 <- quantile(df[[outcome]], 0.75, na.rm = TRUE)
+  IQR <- IQR(df[[outcome]], na.rm = TRUE)
+
+  # Get training data and create quantile distribution classes
+  df <- df %>%
+    mutate(q_class = case_when(
+      df[[outcome]] < (Q1 - 1.5 * IQR) ~ "very_low",
+      df[[outcome]] >= (Q1 - 1.5 * IQR) & df[[outcome]] < Q1 ~ "low",
+      df[[outcome]] >= Q1 & df[[outcome]] < Q3 ~ "medium",
+      df[[outcome]] >= Q3 & df[[outcome]] < (Q3 + 1.5 * IQR) ~ "high",
+      df[[outcome]] >= (Q3 + 1.5 * IQR) ~ "very_high"
+    ))
+
+  # Data augmentation by oversampling underrepresented quantile
+  recipe <- recipe(q_class ~ ., data = df) |>
+    step_smotenc(q_class, over_ratio = over_ratio) |>
+    prep()
+
+  # Return the baked data
+  bake(recipe, new_data = NULL)
+}
+
+training_oversampling_high_quantile <- function(df, outcome, prob = .75, over_ratio = 0.5) {
+
+  # Calculate the third quartile
+  out_q <- quantile(df[[outcome]], prob, na.rm = TRUE)
+
+  # Get training data and create binary high-value class
+  df <- df |>
+    mutate(q_class = ifelse(df[[outcome]] >= out_q, "high", "low"))
+
+  # Data augmentation by oversampling underrepresented quantile
+  recipe <- recipe(q_class ~ ., data = df) |>
+    step_smotenc(q_class, over_ratio = over_ratio) |>
+    prep()
+
+  # Return the baked data
+  bake(recipe, new_data = NULL)
+
+}
+
 
 # adapted from https://wilkelab.org/practicalgg/articles/goode.html
 plot_goode_homolosine_world_map <- function(ocean_color = "#56B4E950", 
@@ -146,11 +221,14 @@ prepare_new_data <- function(object, newdata, na.action = na.omit){
 
 predict_intervals_rf <- function(object, df, log_base = NULL, individuals = FALSE){
 
-  pred_data <- bake(prep(object$recipe), df) |>
-    drop_na(any_of(prep(object$recipe)$term_info$variable[prep(object$recipe)$term_info$role=="predictor"])) |>
-    select(-prep(object$recipe)$term_info$variable[prep(object$recipe)$term_info$role=="outcome"])
+  df_prep <- prep(object$recipe)
 
-  preds <- predict(object$finalModel, newdata = pred_data, predict.all = TRUE)
+  pred_data <- dplyr::select(df, object$recipe$var_info$variable) |>
+    bake(df_prep, new_data = _) |>
+    select(object$recipe$term_info$variable[object$recipe$term_info$role!="outcome"]) |>
+    drop_na()
+
+  preds <- stats::predict(object$finalModel, newdata = pred_data, predict.all = TRUE)
 
   if (is.null(log_base)) {
     prediction <- preds$aggregate

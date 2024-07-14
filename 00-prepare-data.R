@@ -171,31 +171,63 @@ dev.off()
 write_csv2(ts_data, "./data/ts_data_raw.csv")
 st_write(sf_data, "./data/sf_data_raw.gpkg", delete_dsn = TRUE)
 
-# Fill predictors gaps using knn
-pred_data <- select(ts_data, id, id_mine, production, total_water, raw_water, country_code, region, cumulative_production, average_production, byproduct_group, mine_type, ore_body_group, process_route, ore_grade, et0_annual) |>
+# Prepare model data
+model_data <- select(ts_data, id, id_mine, mine, country_code, year, raw_water, total_water, production, average_production, ore_grade, byproduct_group, mine_type, ore_body_group, process_route, et0_annual) |>
   mutate_if(is.character, as.factor) |>
-  dplyr::mutate(id_mine = factor(id_mine))
-
-pred_data <- recipe(raw_water + total_water ~ ., data = pred_data) |>
-  step_impute_knn(any_of(c("production", "ore_grade", "mine_type", "byproduct_group", "process_route", "et0_annual")), impute_with = imp_vars(-any_of(c("id"))), neighbors = 5,) |>
-  prep() |>
-  bake(pred_data) |> 
   dplyr::group_by(id_mine) |>
-  dplyr::mutate(average_production = ifelse(is.na(average_production), mean(production, na.rm = TRUE), average_production)) |>
+  dplyr::mutate(average_production = mean(production, na.rm = TRUE), production = ifelse(is.na(production), average_production, production)) |>
+  dplyr::mutate(total_water = ifelse(total_water < raw_water, raw_water, total_water)) |>
   dplyr::ungroup() |>
-  select(id, raw_water, total_water, production, average_production, ore_grade, mine_type, byproduct_group, process_route, et0_annual)
+  dplyr::mutate(outlier_flag = ifelse(((raw_water / production) < 0.01 | (raw_water / production) > 40) | 
+                                      ((total_water / production) < 0.01 | (total_water / production) > 40), 1, 0))
+
+# Check water outliers and set to NA variables that are probably incorrect
+outliers_ids <- dplyr::filter(model_data, id_mine %in% unique(as.character(dplyr::filter(model_data, outlier_flag == 1)$id_mine)))$id
+model_data |>
+  dplyr::filter(id %in% outliers_ids) |>
+  select(id, id_mine, mine, country_code, year, raw_water, total_water, production, average_production)# write to write_csv2("./data/manual_correction_outliers.csv")
+
+corrections <- read_csv2("./data/manual_correction_outliers.csv") |>
+  select(id, raw_water, total_water, production, average_production)
+
+model_data <- model_data |>
+  rows_update(corrections, by = "id") |>
+  select(-outlier_flag)
+
+model_data |>
+  dplyr::mutate(
+    raw_water_intensity = raw_water / production,
+    total_water_intensity = total_water / production,
+    ore_extracted = 100 * production / ore_grade,
+    ratio_raw_water_ore = raw_water / ore_extracted,
+    ratio_total_water_ore = total_water / ore_extracted) |>
+    write_csv2("./data/ts_model_data.csv")
+
+# Fill predictors gaps using knn
+pred_data <- recipe(raw_water + total_water ~ ., data = model_data) |>
+  step_impute_knn(any_of(c("production", "ore_grade", "mine_type", "byproduct_group", "process_route")), impute_with = imp_vars(-any_of(c("id", "id_mine", "mine", "year"))), neighbors = 5,) |>
+  prep() |>
+  bake(model_data) |>
+  dplyr::group_by(id_mine) |>
+  dplyr::mutate(average_production = mean(production, na.rm = TRUE)) |>
+  dplyr::ungroup() |>
+  dplyr::mutate(
+    raw_water_intensity = raw_water / production,
+    total_water_intensity = total_water / production,
+    ore_extracted = 100 * production / ore_grade,
+    ratio_raw_water_ore = raw_water / ore_extracted,
+    ratio_total_water_ore = total_water / ore_extracted)
 
 write_csv2(pred_data, "./data/ts_pred_data.csv")
-
 
 ################################################################################
 ######## Check outliers
 
 # Fit a linear model
-model_data <- select(ts_data, id, raw_water, production, ore_grade, process_route, mine_type, ore_body_group, byproduct_group) |>
+model_data <- select(pred_data, id, id_mine, raw_water_intensity, production, ore_grade, process_route, mine_type, byproduct_group) |>
   drop_na()
 
-model <- lm(raw_water ~ production + ore_grade + process_route + mine_type + ore_body_group + byproduct_group, data = ts_data)
+model <- lm(raw_water_intensity ~ production + ore_grade + process_route + mine_type + byproduct_group, data = pred_data)
 
 # Calculate residuals
 model_data$residuals <- abs(residuals(model))
@@ -204,6 +236,16 @@ model_data$residuals <- abs(residuals(model))
 outlier_threshold <- mean(model_data$residuals) + 2 * sd(model_data$residuals)
 outliers <- model_data$residuals > outlier_threshold
 outlier_data <- model_data[outliers, ]
+outlier_data |>
+  arrange(residuals)
+
+select(dplyr::filter(pred_data, id_mine == 329), any_of(c(names(model_data), "raw_water", "total_water")))
+
+ggplot(model_data, aes(sample = residuals)) +
+  stat_qq() +
+  stat_qq_line() +
+  labs(title = "Q-Q Plot of Residuals", x = "Theoretical Quantiles", y = "Sample Quantiles") +
+  theme_minimal()
 
 # Cook's Distance
 model_data$cooks_distance <- cooks.distance(model)
@@ -213,22 +255,22 @@ influential_threshold <- 4 / nrow(model_data)
 influential_points <- model_data$cooks_distance > influential_threshold
 
 # Calculate Z-scores
-ts_data <- ts_data |>
-  dplyr::mutate(raw_water_z = scale(raw_water, center = TRUE, scale = TRUE)[,1])
+pred_data2 <- pred_data |>
+  dplyr::mutate(raw_water_intensity_z = scale(raw_water_intensity, center = TRUE, scale = TRUE)[,1])
 
 # Identify outliers using Z-score
-outliers_z <- ts_data |>
-  dplyr::filter(abs(raw_water_z) > 3)
+outliers_z <- pred_data2 |>
+  dplyr::filter(abs(raw_water_intensity_z) > 3)
 
 # Calculate IQR and identify outliers
-iqr_value <- IQR(ts_data$raw_water, na.rm = TRUE)
-q1 <- quantile(ts_data$raw_water, 0.25, na.rm = TRUE)
-q3 <- quantile(ts_data$raw_water, 0.75, na.rm = TRUE)
+iqr_value <- IQR(pred_data2$raw_water_intensity, na.rm = TRUE)
+q1 <- quantile(pred_data2$raw_water_intensity, 0.25, na.rm = TRUE)
+q3 <- quantile(pred_data2$raw_water_intensity, 0.75, na.rm = TRUE)
 
 # Choose a multiplier
 multiplier <- 2  # Less strict; adjust based on your data and needs
 
-outliers_iqr <- dplyr::filter(ts_data, raw_water < (q1 - multiplier * iqr_value) | raw_water > (q3 + multiplier * iqr_value))
+outliers_iqr <- dplyr::filter(pred_data2, raw_water_intensity < (q1 - multiplier * iqr_value) | raw_water_intensity > (q3 + multiplier * iqr_value))
 
 outliers_iqr
 
