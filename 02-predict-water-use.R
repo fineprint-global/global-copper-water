@@ -16,8 +16,9 @@ new_data <- read_csv2("./data/ts_pred_data.csv") |>
     select(id, country_code, model_vars) |>
     dplyr::mutate_if(is.character, as.factor)
 
+
 ## Check error dependency 
-rw_pred <- predict_intervals_rf(object = rw_model,  df = rename(new_data, target = raw_water), log_base = 10) |>
+rw_pred <- predict_intervals_rf(object = rw_model,  df = rename(new_data, target = raw_water)) |>
     transmute(rw_pred = predicted * new_data$production, rw_pred_sd = sqrt(predicted_sd^2 + 0^2))
 
 ## convert raw water intensity to raw water volume
@@ -25,7 +26,7 @@ new_data_filled <- new_data |>
     bind_cols(rw_pred) |>
     dplyr::mutate(raw_water = ifelse(is.na(raw_water), rw_pred, raw_water))
 
-tw_pred <- predict_intervals_rf(tw_model, df = new_data_filled, log_base = 10) |>
+tw_pred <- predict_intervals_rf(tw_model, df = new_data_filled) |>
     select(tw_pred = predicted, tw_pred_sd = predicted_sd)
 
 predictions <- bind_cols(select(new_data, id, raw_water, total_water), rw_pred, tw_pred)

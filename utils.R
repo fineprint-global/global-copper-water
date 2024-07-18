@@ -1,3 +1,4 @@
+library(viridis)
 library(dplyr)
 library(tidyr)
 library(stringr)
@@ -98,6 +99,46 @@ training_oversampling_high_quantile <- function(df, outcome, prob = .75, over_ra
 
 }
 
+make_water_use_grid <- function(data, cell_size=50000){
+  
+  calculate_slope <- function(x, y) {
+  if (length(y) < 2) {
+    return(NA) # Not enough points to calculate a slope
+  }
+    model <- lm(y ~ x)
+    return(coef(model)[2]) # Return the slope
+  }
+
+  mine_features_points <- data |> 
+    mutate(geom = st_centroid(geom))
+  
+  mine_features_points_goode <- 
+    st_transform(mine_features_points, crs = "+proj=igh +ellps=WGS84 +units=m +no_defs")
+  
+  grid_50 <- st_make_grid(mine_features_points_goode, cellsize = cell_size) |> 
+    st_as_sf() |> 
+    st_filter(mine_features_points_goode) |>
+    dplyr::mutate(id_grid = row_number())
+
+  slope <- st_join(mine_features_points_goode, grid_50) |>
+    arrange(id_mine, year) |>
+    group_by(id_grid) |>
+    summarize(
+      slope_total_water = calculate_slope(year, total_water),
+      slope_raw_water = calculate_slope(year, raw_water),
+      .groups = 'drop' # drop the grouping to return a regular dataframe
+    ) |>
+    st_drop_geometry() 
+
+  out <- mine_features_points_goode |>
+    pivot_wider(names_from = year, values_from = c(total_water, raw_water), id_cols = c(id_mine, geom), names_sep = ".") |>
+    select(-c(id_mine)) |>
+    aggregate(grid_50, sum, na.rm = TRUE) |>
+    bind_cols(slope)
+
+  return(out)
+  
+}
 
 # adapted from https://wilkelab.org/practicalgg/articles/goode.html
 plot_goode_homolosine_world_map <- function(ocean_color = "#56B4E950", 
@@ -219,7 +260,30 @@ prepare_new_data <- function(object, newdata, na.action = na.omit){
   predict(object$preProcess, newdata)
 }
 
-predict_intervals_rf <- function(object, df, log_base = NULL, individuals = FALSE){
+# Function to revert transformations applied to the independent variable
+revert_transformations <- function(rec, values) {
+  
+  transformed_values <- values
+  
+  for (step in rev(rec$steps)) {
+    #step = rev(rec$steps)[[6]]
+    step_class <- class(step)[1]
+    if (rec$var_info$variable[rec$var_info$role=="outcome"] %in% step$columns) {
+      if (step_class == "step_log") {
+        base <- step$base
+        transformed_values <- base ^ transformed_values
+        
+      } else if (step_class == "step_normalize") {
+        transformed_values <- transformed_values * step$sds + step$means
+      # # Add other transformations and their reverses as needed
+      } 
+    }
+  }
+  
+  return(transformed_values)
+}
+
+predict_intervals_rf <- function(object, df, individuals = FALSE){
 
   df_prep <- prep(object$recipe)
 
@@ -230,13 +294,16 @@ predict_intervals_rf <- function(object, df, log_base = NULL, individuals = FALS
 
   preds <- stats::predict(object$finalModel, newdata = pred_data, predict.all = TRUE)
 
-  if (is.null(log_base)) {
-    prediction <- preds$aggregate
-    prediction_sd <- apply(preds$individual, 1, sd)
-  } else {
-    prediction <- log_base^preds$aggregate
-    prediction_sd <- apply(preds$individual, 1, function(x) sd(log_base^x))
-  }
+  prediction <- revert_transformations(object$recipe, preds$aggregate)
+  prediction_sd <- apply(preds$individual, 1, function(x) sd(revert_transformations(object$recipe, x)))
+
+  # if (is.null(log_base)) {
+  #   prediction <- preds$aggregate
+  #   prediction_sd <- apply(preds$individual, 1, sd)
+  # } else {
+  #   prediction <- log_base^preds$aggregate
+  #   prediction_sd <- apply(preds$individual, 1, function(x) sd(log_base^x))
+  # }
 
   out <- tibble(predicted = prediction, predicted_sd = prediction_sd) 
 
