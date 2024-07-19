@@ -185,3 +185,7 @@ bg_map +
             labs(color = "Quadrant") +
             guides(color = guide_legend(override.aes = list(size = 4))) 
  dev.off()
+
+
+left_join(sf_data, trend_data, by = join_by(id_mine)) |>
+    st_write(dsn = "./results/trend_data.csv")
