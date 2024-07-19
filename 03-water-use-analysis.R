@@ -2,7 +2,7 @@ source("utils.R")
 
 # Load data
 water_data <- read_csv2("./data/final_predictions.csv") |>
-    dplyr::mutate(total_water = total_water * 1e-3, raw_water = raw_water * 1e-3) # convert from ML to Mm3
+    dplyr::dplyr::mutate(total_water = total_water * 1e-3, raw_water = raw_water * 1e-3) # convert from ML to Mm3
 
 sf_data <- st_read("./data/sf_data_raw.gpkg")
 
@@ -18,14 +18,14 @@ map_data_long <- map_data_wide |>
 # get single scale
 rw_pretty_labels <- map_data_long |>
     reframe(raw_water = round(expm1(pretty(log1p(raw_water))))) |>
-    mutate(raw_water = ifelse(raw_water >= 10 & raw_water < 50, round(raw_water / 10) * 10,
+    dplyr::mutate(raw_water = ifelse(raw_water >= 10 & raw_water < 50, round(raw_water / 10) * 10,
                        ifelse(raw_water >= 50, round(raw_water / 10) * 10, raw_water))) |>
                        unlist() |>
                        as.numeric()
 
 tw_pretty_labels <- map_data_long |>
     reframe(total_water = round(expm1(pretty(log1p(total_water))))) |>
-    mutate(total_water = ifelse(total_water >= 10 & total_water < 50, round(total_water / 10) * 10,
+    dplyr::mutate(total_water = ifelse(total_water >= 10 & total_water < 50, round(total_water / 10) * 10,
                        ifelse(total_water >= 50, round(total_water / 10) * 10, total_water))) |>
                        unlist() |>
                        as.numeric()
@@ -116,50 +116,72 @@ calculate_slope <- function(x, y) {
 }
 
 trend_data <- water_data |>
-  select(id_mine, year, raw_water, total_water, freshwater_availability, average_production) |>
-  drop_na() |>
+  select(id_mine, year, raw_water, total_water, freshwater_availability, average_production, production) |>
   group_by(id_mine) |>
   summarize(
     raw_water_trend = coef(lm(raw_water ~ year))[2],
     total_water_trend = coef(lm(total_water ~ year))[2],
     freshwater_availability = unique(freshwater_availability),
-    average_production = mean(average_production, na.rm = TRUE)
-  )
-
-# Prepare quadrant annotations
-quadrant_summaries <- trend_data |>
-  mutate(quadrant = case_when(
+    average_production = mean(average_production, na.rm = TRUE) * 1e-6, # from t to Mt
+    cum_production = sum(production, na.rm = TRUE) * 1e-6 # from t to Mt
+  ) |>
+  drop_na() |>
+  dplyr::mutate(quadrant = case_when(
     raw_water_trend > 0 & freshwater_availability > 0 ~ "Q1",
     raw_water_trend <= 0 & freshwater_availability > 0 ~ "Q2",
     raw_water_trend <= 0 & freshwater_availability < 0 ~ "Q3",
     raw_water_trend > 0 & freshwater_availability < 0 ~ "Q4"
   )) |>
+  dplyr::mutate(quadrant = factor(quadrant, c("Q4", "Q1", "Q2", "Q3")))
+
+# Prepare quadrant annotations
+quadrant_summaries <- trend_data |>
   group_by(quadrant) |>
-  mutate(
-    total_production = sum(average_production)
+  reframe(
+    total_ave_production = sum(average_production),
+    total_production = sum(cum_production),
   ) |>
   dplyr::mutate(
-    percentage = 100 * total_production / sum(average_production),
-    label = paste(quadrant, ": ", round(total_production / 1e6, 1), "M (", round(percentage, 1), "%)", sep = ""))
+    total_percentage = 100 * total_production / sum(total_production),
+    total_ave_percentage = 100 * total_ave_production / sum(total_ave_production),
+    label_total = paste(quadrant, ": ", round(total_production, 1), "Mt (", round(total_percentage, 1), "%)", sep = ""),
+    label_total_ave = paste(quadrant, ": ", round(total_ave_production, 1), "Mt (", round(total_ave_percentage, 1), "%)", sep = ""))
 
 # Set positions for quadrant annotations
 annotation_positions <- data.frame(
   quadrant = c("Q1", "Q2", "Q3", "Q4"),
-  x = c(5000, -5000, -5000, 5000),
+  x = c(6.5, -6.5, -6.5, 6.5),
   y = c(1, 1, -1, -1)
 ) |>
   left_join(quadrant_summaries, by = "quadrant")
 
+png(filename = "./results/rw_quadrant_plot.png", width = 250, height = 200, units = "mm", pointsize = 12, res = 300, bg = "white")
 ggplot(trend_data, aes(x = raw_water_trend, y = freshwater_availability)) +
-  geom_point(aes(size = average_production, alpha = 0.7)) +
+  geom_point(aes(size = average_production, color = quadrant), alpha = 0.5, show.legend = c(color = FALSE, size = TRUE)) +
   scale_size_continuous(range = c(3, 15)) +
+  scale_color_brewer(palette = "Set1") +
   geom_vline(xintercept = 0, color = "black") +
   geom_hline(yintercept = 0, color = "black") +
-  geom_text(data = annotation_positions, aes(x = x, y = y, label = label), size = 5, fontface = "bold") +
+  geom_text(data = annotation_positions, aes(x = x, y = y, label = label_total_ave), size = 5, fontface = "bold") +
   theme_minimal() +
   labs(
-    x = "raw_water_trend",
-    y = "freshwater_availability_trend",
-    size = "average_production"
+    x = "Raw water use trend",
+    y = "Freshwater availability trend",
+    size = "Average production (Mt)"
   ) +
-  theme(legend.position = "bottom")
+  theme(
+    legend.direction = "vertical",
+    legend.position = c(0.85, 0.2), # Position legend inside the plot (adjust as needed)
+    legend.justification = c(0.5, 0.5), # Center the legend
+    legend.background = element_rect(fill = "white", color = "black") # Optional: Add background and border for better visibility
+  )
+dev.off()
+
+png(filename = "./results/rw_quadrant_map.png", width = 250, height = 150, units = "mm", pointsize = 12, res = 300, bg = "white")
+bg_map + 
+    geom_sf(data = dplyr::filter(left_join(sf_data, trend_data, by = join_by(id_mine)), !is.na(quadrant)),
+            aes(color = quadrant), size = 0.7) + 
+            scale_color_brewer(palette = "Set1") +
+            labs(color = "Quadrant") +
+            guides(color = guide_legend(override.aes = list(size = 4))) 
+ dev.off()
