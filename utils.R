@@ -24,6 +24,8 @@ library(Metrics)
 library(themis)
 library(embed)
 library(patchwork)
+library(spgwr)
+library(spdep)
 
 dir.create("./data", showWarnings = FALSE, recursive = TRUE)
 dir.create("./results", showWarnings = FALSE, recursive = TRUE)

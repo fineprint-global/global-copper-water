@@ -2,9 +2,26 @@ source("utils.R")
 
 # Load data
 water_data <- read_csv2("./data/final_predictions.csv") |>
-    dplyr::dplyr::mutate(total_water = total_water * 1e-3, raw_water = raw_water * 1e-3) # convert from ML to Mm3
+    dplyr::mutate(total_water = total_water * 1e-3, raw_water = raw_water * 1e-3) # convert from ML to Mm3
 
 sf_data <- st_read("./data/sf_data_raw.gpkg")
+
+bg_map = plot_goode_homolosine_world_map(ocean_color = NA, land_color = "gray95", family = "Sans",
+                                      grid_color = "grey75", grid_size = 0.1,
+                                      country_borders_color = "grey75", country_borders_size = 0.1) +
+      ggplot2::coord_sf(crs = "+proj=igh", expand = FALSE) +
+      theme(
+        plot.title = element_text(hjust = 0.1, vjust = -15), # Center and adjust vertical position
+        plot.title.position = "plot",  # Position title relative to the entire plot
+        legend.spacing.x = unit(1.0, 'cm'),
+        legend.position = "bottom",
+        legend.direction = "horizontal",
+        legend.justification = "center",
+        legend.box.spacing = unit(0.0, "cm"),
+        legend.key.size = unit(0.3, "cm"),
+        legend.key.width = unit(345/15, "mm"),
+        plot.margin = unit(c(0, 0, 0, 0), "cm")
+      ) 
 
 # water use to grid
 map_data_wide <- left_join(select(sf_data, id_mine), select(water_data, id_mine, year, total_water, raw_water)) |>
@@ -29,23 +46,6 @@ tw_pretty_labels <- map_data_long |>
                        ifelse(total_water >= 50, round(total_water / 10) * 10, total_water))) |>
                        unlist() |>
                        as.numeric()
-
-bg_map = plot_goode_homolosine_world_map(ocean_color = NA, land_color = "gray95", family = "Sans",
-                                      grid_color = "grey75", grid_size = 0.1,
-                                      country_borders_color = "grey75", country_borders_size = 0.1) +
-      ggplot2::coord_sf(crs = "+proj=igh", expand = FALSE) +
-      theme(
-        plot.title = element_text(hjust = 0.1, vjust = -15), # Center and adjust vertical position
-        plot.title.position = "plot",  # Position title relative to the entire plot
-        legend.spacing.x = unit(1.0, 'cm'),
-        legend.position = "bottom",
-        legend.direction = "horizontal",
-        legend.justification = "center",
-        legend.box.spacing = unit(0.0, "cm"),
-        legend.key.size = unit(0.3, "cm"),
-        legend.key.width = unit(345/15, "mm"),
-        plot.margin = unit(c(0, 0, 0, 0), "cm")
-      ) 
 
 ### Make Raw water maps
 rw_maps <- lapply(2015:2019, function(y){
@@ -109,22 +109,98 @@ dev.off()
 
 ######## Make quadrant plot for fresh water availability
 
-# Calculate trends (slope) for total_water and freshwater_availability
-calculate_slope <- function(x, y) {
-  model <- lm(y ~ x)
-  return(coef(model)[2])
-}
+### Calculate local water use trend using GWR
+
+gwr_data <- left_join(sf_data, water_data, by = join_by(id_mine)) |>
+    select(id_mine, year, raw_water, total_water)
+
+# Check for spatial autocorrelation using Moran's I
+coords <- st_coordinates(gwr_data) |>
+  as_tibble() |>
+  dplyr::mutate(
+    X = jitter(X, amount = 1e-5),
+    Y = jitter(Y, amount = 1e-5)) # jitter to avoid error because of repeated coordinates of the temporal observations
+nb <- knn2nb(knearneigh(coords))
+listw <- nb2listw(nb)
+moran.test(gwr_data$raw_water, listw)
+moran.test(gwr_data$total_water, listw)
+
+rw_bw <- gwr.sel(raw_water ~ year, data = as(gwr_data, "Spatial"), gweight = gwr.Gauss, verbose = TRUE)
+tw_bw <- gwr.sel(raw_water ~ year, data = as(gwr_data, "Spatial"), gweight = gwr.Gauss, verbose = TRUE)
+
+rw_gwr_model <- gwr(raw_water ~ year,
+                 data = as(gwr_data, "Spatial"),
+                 bandwidth = rw_bw,
+                 gweight = gwr.Gauss,
+                 hatmatrix = TRUE)
+
+tw_gwr_model <- gwr(total_water ~ year,
+                 data = as(gwr_data, "Spatial"),
+                 bandwidth = tw_bw,
+                 gweight = gwr.Gauss,
+                 hatmatrix = TRUE)
+
+# Compare to ols
+rw_ols_model <- lm(raw_water ~ year, data = as.data.frame(gwr_data))
+summary(rw_ols_model)
+AIC(rw_ols_model)
+rw_gwr_model
+
+tw_ols_model <- lm(total_water ~ year, data = as.data.frame(gwr_data))
+summary(tw_ols_model)
+AIC(tw_ols_model)
+tw_gwr_model
+
+# Extract local coefficients and their standard errors
+as.data.frame(rw_gwr_model$SDF) |>
+  mutate(
+    t_value = gwr_data$raw_water / rw_gwr_model$SDF$pred.se,  # Adjust column name for standard errors
+    p_value = 2 * pt(abs(t_value), df = nrow(gwr_data) - 2, lower.tail = FALSE)
+  ) |>
+  dplyr::select(p_value) |>
+  summary()
+
+as.data.frame(tw_gwr_model$SDF) |>
+  mutate(
+    t_value = gwr_data$total_water / tw_gwr_model$SDF$pred.se,  # Adjust column name for standard errors
+    p_value = 2 * pt(abs(t_value), df = nrow(gwr_data) - 2, lower.tail = FALSE)
+  ) |>
+  dplyr::select(p_value) |>
+  summary()
+
+
+##### Prepare data for trend plots
+rw_gwr_res <- as(rw_gwr_model$SDF, "sf") |>
+  dplyr::mutate(id_mine = gwr_data$id_mine) |>
+  dplyr::select(id_mine, sum.w, `(Intercept)`, year, `(Intercept)_se`, year_se, localR2, `(Intercept)_se_EDF`, year_se_EDF, id_mine) |>
+  st_drop_geometry() |>
+  as_tibble() |>
+  group_by(id_mine) |>
+  summarise(across(everything(), unique)) |>
+  right_join(sf_data)
+
+tw_gwr_res <- as(tw_gwr_model$SDF, "sf") |>
+  dplyr::mutate(id_mine = gwr_data$id_mine) |>
+  dplyr::select(id_mine, sum.w, `(Intercept)`, year, `(Intercept)_se`, year_se, localR2, `(Intercept)_se_EDF`, year_se_EDF, id_mine) |>
+  st_drop_geometry() |>
+  as_tibble() |>
+  group_by(id_mine) |>
+  summarise(across(everything(), unique)) |>
+  right_join(sf_data)  
 
 trend_data <- water_data |>
   select(id_mine, year, raw_water, total_water, freshwater_availability, average_production, production) |>
   group_by(id_mine) |>
-  summarize(
-    raw_water_trend = coef(lm(raw_water ~ year))[2],
-    total_water_trend = coef(lm(total_water ~ year))[2],
+  reframe(
+    #raw_water_trend = coef(lm(raw_water ~ year))[2],
+    #total_water_trend = coef(lm(total_water ~ year))[2],
     freshwater_availability = unique(freshwater_availability),
     average_production = mean(average_production, na.rm = TRUE) * 1e-6, # from t to Mt
     cum_production = sum(production, na.rm = TRUE) * 1e-6 # from t to Mt
   ) |>
+  dplyr::mutate(
+    raw_water_trend = rw_gwr_res$year,
+    total_water_trend = tw_gwr_res$year) |> # trend from GWR
   drop_na() |>
   dplyr::mutate(quadrant = case_when(
     raw_water_trend > 0 & freshwater_availability > 0 ~ "Q1",
@@ -165,14 +241,14 @@ ggplot(trend_data, aes(x = raw_water_trend, y = freshwater_availability)) +
   geom_text(data = annotation_positions, aes(x = x, y = y, label = label_total_ave), size = 5, fontface = "bold") +
   theme_minimal() +
   labs(
-    x = "Raw water use trend",
-    y = "Freshwater availability trend",
+    x = expression("Raw water use trend (Million" * phantom(" ") * m^3 * phantom(" ") * year^-1 * ")"),
+    y = expression("Freshwater availability trend (" * cm * phantom(" ") * year^-1 * ")"),
     size = "Average production (Mt)"
   ) +
+  guides(size = guide_legend(position = "inside")) +
   theme(
     legend.direction = "vertical",
-    legend.position = c(0.85, 0.2), # Position legend inside the plot (adjust as needed)
-    legend.justification = c(0.5, 0.5), # Center the legend
+    legend.position.inside = c(0.85, 0.2),
     legend.background = element_rect(fill = "white", color = "black") # Optional: Add background and border for better visibility
   )
 dev.off()
@@ -186,6 +262,6 @@ bg_map +
             guides(color = guide_legend(override.aes = list(size = 4))) 
  dev.off()
 
-
 left_join(sf_data, trend_data, by = join_by(id_mine)) |>
-    st_write(dsn = "./results/trend_data.csv")
+    st_write(dsn = "./results/trend_data.csv", delete_dsn = TRUE)
+
