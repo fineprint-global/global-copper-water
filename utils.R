@@ -38,7 +38,7 @@ training_oversampling_quantile <- function(df, outcome, over_ratio = 0.5) {
   IQR <- IQR(df[[outcome]], na.rm = TRUE)
 
   # Get training data and create quantile distribution classes
-  df <- df %>%
+  df <- df |>
     mutate(q_class = case_when(
       df[[outcome]] < (Q1 - 1.5 * IQR) ~ "very_low",
       df[[outcome]] >= (Q1 - 1.5 * IQR) & df[[outcome]] < Q1 ~ "low",
@@ -64,7 +64,7 @@ training_oversampling_quantile <- function(df, outcome, over_ratio = 0.5) {
   IQR <- IQR(df[[outcome]], na.rm = TRUE)
 
   # Get training data and create quantile distribution classes
-  df <- df %>%
+  df <- df |>
     mutate(q_class = case_when(
       df[[outcome]] < (Q1 - 1.5 * IQR) ~ "very_low",
       df[[outcome]] >= (Q1 - 1.5 * IQR) & df[[outcome]] < Q1 ~ "low",
@@ -153,7 +153,7 @@ plot_goode_homolosine_world_map <- function(ocean_color = "#56B4E950",
   
   crs_goode <- "+proj=igh +ellps=WGS84 +units=m +no_defs"
   
-  world_sf <- sf::st_as_sf(rworldmap::getMap(resolution = "low")) %>% 
+  world_sf <- sf::st_as_sf(rworldmap::getMap(resolution = "low")) |> 
     sf::st_transform(crs = crs_goode)
   
   # projection outline in long-lat coordinates
@@ -177,9 +177,9 @@ plot_goode_homolosine_world_map <- function(ocean_color = "#56B4E950",
   )
   
   goode_outline <- 
-    list(cbind(longs, lats)) %>%
-    sf::st_polygon() %>%
-    sf::st_sfc(crs = "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs") %>% 
+    list(cbind(longs, lats)) |>
+    sf::st_polygon() |>
+    sf::st_sfc(crs = "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs") |> 
     sf::st_transform(crs = crs_goode)
   
   # get the bounding box in transformed coordinates and expand by 10%
@@ -193,8 +193,8 @@ plot_goode_homolosine_world_map <- function(ocean_color = "#56B4E950",
         c(xlim[1], xlim[2], xlim[2], xlim[1], xlim[1]), 
         c(ylim[1], ylim[1], ylim[2], ylim[2], ylim[1])
       )
-    ) %>%
-    sf::st_polygon() %>%
+    ) |>
+    sf::st_polygon() |>
     sf::st_sfc(crs = crs_goode)
   
   goode_without <- sf::st_difference(goode_encl_rect, goode_outline)
@@ -202,16 +202,16 @@ plot_goode_homolosine_world_map <- function(ocean_color = "#56B4E950",
   y_grid <- lapply(seq(-80, 90, 20)   + 2, function(y) sf::st_point(c(longitude = -175, latitude =   y)))
   x_grid <- lapply(seq(-150, 150, 50) - 9, function(x) sf::st_point(c(longitude =    x, latitude = -62)))
   
-  # goode_grid <- sf::st_as_sfc(c(y_grid, x_grid), crs = "+proj=longlat +datum=WGS84 +no_defs") %>% 
-  #   sf::st_as_sf() %>% 
+  # goode_grid <- sf::st_as_sfc(c(y_grid, x_grid), crs = "+proj=longlat +datum=WGS84 +no_defs") |> 
+  #   sf::st_as_sf() |> 
   #   dplyr::mutate(label = c(paste0(abs(seq(-80, 90, 20)),   "°", c(rep("S", 4), "", rep("N", 4))), 
-  #                           paste0(abs(seq(-160, 180, 20)), "°", c(rep("W", 8), "", rep("E", 8))))) %>% 
+  #                           paste0(abs(seq(-160, 180, 20)), "°", c(rep("W", 8), "", rep("E", 8))))) |> 
   #   sf::st_transform(crs = crs_goode)
   
-  goode_grid <- sf::st_as_sfc(c(y_grid, x_grid), crs = "+proj=longlat +datum=WGS84 +no_defs") %>% 
-    sf::st_as_sf() %>% 
+  goode_grid <- sf::st_as_sfc(c(y_grid, x_grid), crs = "+proj=longlat +datum=WGS84 +no_defs") |> 
+    sf::st_as_sf() |> 
     dplyr::mutate(label = c(paste0(abs(seq(-80, 90, 20)),   "°", c(rep("S", 4), "", rep("N", 4))), 
-                            paste0(abs(seq(-150, 150, 50)), "°", c(rep("W", 3), "", rep("E", 3))))) %>% 
+                            paste0(abs(seq(-150, 150, 50)), "°", c(rep("W", 3), "", rep("E", 3))))) |> 
     sf::st_transform(crs = crs_goode)
   
   gp_map <- ggplot(world_sf) + 
@@ -414,6 +414,59 @@ metrics_log1p_models <- function(data, lev = NULL, model = NULL) {
     return(stats)
 }
 
+create_model_comparison_csv <- function(comparison_table) {
+  
+  # Define a function to add confidence levels
+  add_confidence_levels <- function(p_value) {
+    if (grepl("<", p_value)) {  # Check if the value is a "< e-16" type string
+      return("***")
+    }
+    
+    p_value <- as.numeric(p_value)
+    if (is.na(p_value) || p_value == "") {
+      return("")
+    } else if (p_value < 0.001) {
+      return("***")
+    } else if (p_value < 0.01) {
+      return("**")
+    } else if (p_value < 0.05) {
+      return("*")
+    } else if (p_value < 0.1) {
+      return(".")
+    } else {
+      return("")
+    }
+  }
+  
+  # Process each metric
+  format_table <- function(metric_name, metric_data) {
+    df <- as.data.frame(metric_data)
+    df <- cbind(Metric = metric_name, Model = row.names(df), df)
+    row.names(df) <- NULL
+    
+    # Apply confidence levels only to the lower triangle (p-values)
+    for (i in seq_len(nrow(df))) {
+      for (j in seq_len(ncol(df) - 2)) {  # Adjusted loop range to match column indexing
+        if (i > j) {  # Check if it's the lower triangle
+          df[i, j + 2] <- paste(df[i, j + 2], add_confidence_levels(df[i, j + 2]))
+        }
+      }
+    }
+    
+    return(df)
+  }
+  
+  # Apply the function to each metric in the list
+  mae_df <- format_table("MAE", comparison_table$MAE)
+  rmse_df <- format_table("RMSE", comparison_table$RMSE)
+  rsquared_df <- format_table("Rsquared", comparison_table$Rsquared)
+  
+  # Combine all metrics into a single data frame
+  combined_df <- rbind(mae_df, rmse_df, rsquared_df)
+  
+  return(combined_df)
+}
+
 get_resamples_stats <- function(models) {
   resamps <- resamples(models)
   resamps_stats <- summary(resamps)$statistics
@@ -430,7 +483,7 @@ plot_models_performance <- function(models){
   theme1$plot.line$col = rgb(1, 0, 0, .7)
   theme1$plot.line$lwd <- 2
   trellis.par.set(theme1)
-  bwplot(resamps, layout = c(3, 1), scales = list(x = "free"), strip = strip.custom(factor.levels = c("RMSE", "MAE", "Rsquared")))
+  bwplot(resamps, layout = c(3, 1), scales = list(x = "free"))
 }
 
 round_numeric_columns <- function(df, digits) {

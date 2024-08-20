@@ -175,18 +175,18 @@ rw_gwr_res <- as(rw_gwr_model$SDF, "sf") |>
   dplyr::select(id_mine, sum.w, `(Intercept)`, year, `(Intercept)_se`, year_se, localR2, `(Intercept)_se_EDF`, year_se_EDF, id_mine) |>
   st_drop_geometry() |>
   as_tibble() |>
-  group_by(id_mine) |>
-  summarise(across(everything(), unique)) |>
-  right_join(sf_data)
+  dplyr::group_by(id_mine) |>
+  dplyr::summarise(across(everything(), unique)) |>
+  dplyr::right_join(sf_data)
 
 tw_gwr_res <- as(tw_gwr_model$SDF, "sf") |>
   dplyr::mutate(id_mine = gwr_data$id_mine) |>
   dplyr::select(id_mine, sum.w, `(Intercept)`, year, `(Intercept)_se`, year_se, localR2, `(Intercept)_se_EDF`, year_se_EDF, id_mine) |>
   st_drop_geometry() |>
   as_tibble() |>
-  group_by(id_mine) |>
-  summarise(across(everything(), unique)) |>
-  right_join(sf_data)  
+  dplyr::group_by(id_mine) |>
+  dplyr::summarise(across(everything(), unique)) |>
+  dplyr::right_join(sf_data)  
 
 trend_data <- water_data |>
   select(id_mine, year, raw_water, total_water, freshwater_availability, average_production, production) |>
@@ -262,6 +262,8 @@ bg_map +
             guides(color = guide_legend(override.aes = list(size = 4))) 
  dev.off()
 
+
+ 
 left_join(sf_data, trend_data, by = join_by(id_mine)) |>
     st_write(dsn = "./results/trend_data.csv", delete_dsn = TRUE)
 

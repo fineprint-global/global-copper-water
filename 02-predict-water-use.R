@@ -8,28 +8,30 @@ set.seed(96297)
 ### Read data
 rw_model <- read_rds("./results/rw_final_model.rds")
 tw_model <- read_rds("./results/tw_final_model.rds")
-model_vars <- unique(c(rw_model$recipe$var_info$variable[rw_model$recipe$var_info$role!="outcome"],
-                       tw_model$recipe$var_info$variable[tw_model$recipe$var_info$role!="none"]))
+rw_model_vars <- unique(rw_model$recipe$var_info$variable[rw_model$recipe$var_info$role!="outcome"])
+tw_model_vars <- unique(tw_model$recipe$var_info$variable[tw_model$recipe$var_info$role!="outcome"])
 
 raw_data <- read_csv2("./data/ts_data_raw.csv")
 new_data <- read_csv2("./data/ts_pred_data.csv") |>
-    select(id, country_code, model_vars) |>
+    dplyr::select(id, country_code, all_of(c(rw_model_vars, tw_model_vars, "raw_water", "total_water", "raw_water_intensity", "total_water_intensity"))) |>
     dplyr::mutate_if(is.character, as.factor)
 
-
 ## Check error dependency 
-rw_pred <- predict_intervals_rf(object = rw_model,  df = rename(new_data, target = raw_water)) |>
-    transmute(rw_pred = predicted * new_data$production, rw_pred_sd = sqrt(predicted_sd^2 + 0^2))
+#predict(rw_model, dplyr::mutate(new_data, target = NA)) # it seems recipe needs a placeholder for the target column
+rw_pred <- predict_intervals_rf(object = rw_model,  df = dplyr::rename(new_data, target = raw_water)) |>
+    transmute(rw_int_pred = predicted,
+              rw_int_pred_sd = sqrt(predicted_sd^2 + 0^2))
 
 ## convert raw water intensity to raw water volume
 new_data_filled <- new_data |>
     bind_cols(rw_pred) |>
-    dplyr::mutate(raw_water = ifelse(is.na(raw_water), rw_pred, raw_water))
+    dplyr::mutate(raw_water_intensity = ifelse(is.na(raw_water_intensity), rw_int_pred, raw_water_intensity))
 
-tw_pred <- predict_intervals_rf(tw_model, df = new_data_filled) |>
-    select(tw_pred = predicted, tw_pred_sd = predicted_sd)
+tw_pred <- predict_intervals_rf(tw_model, df = dplyr::mutate(new_data_filled, target = NA)) |>
+    select(tw_int_pred = predicted, tw_int_pred_sd = predicted_sd)
 
-predictions <- bind_cols(select(new_data, id, raw_water, total_water), rw_pred, tw_pred)
+predictions <- bind_cols(select(new_data, id, raw_water, total_water, raw_water_intensity, total_water_intensity), rw_pred, tw_pred) |>
+    dplyr::mutate(rw_pred = rw_int_pred * new_data$production, tw_pred = tw_int_pred * new_data$production)
 
 # check error covariance
 # bind_cols(new_data, rw_pred, tw_pred) |>
@@ -96,12 +98,13 @@ predictions_filled |>
 
 write_csv2(predictions_filled, "./results/final_predictions.csv")
 
-# water use distribution 
+png(filename = "./results/density_plot_final_predictions.png", width = 250, height = 120, units = "mm", pointsize = 12, res = 300, bg = "white")
 predictions |>
     dplyr::select(`Raw Water.Reference` = raw_water, `Total Water.Reference` = total_water, `Raw Water.Predicted` = rw_pred, `Total Water.Predicted` = tw_pred) |>
     pivot_longer(cols = everything(), names_to = c("Water", "Source"), names_sep = "\\.") |>
     drop_na() |>
-    ggplot(aes(x = value / 1e6, color = Source, fill = Source)) +
+    dplyr::mutate(value = value * 1e-3) |> # convert to Mm3 ## 1e3 to m3 1e-6 to Mm3 = 1e-3
+    ggplot(aes(x = value, color = Source, fill = Source)) +
     facet_wrap(Water ~ ., scales = "free_x") + 
     geom_histogram(aes(y = after_stat(density)), position = "identity", alpha = 0.5) +
     geom_density(alpha = 0.6, adjust = 1.5) +
@@ -110,15 +113,16 @@ predictions |>
             dplyr::select(`Raw Water.Reference` = raw_water, `Total Water.Reference` = total_water, `Raw Water.Predicted` = rw_pred, `Total Water.Predicted` = tw_pred) |>
             pivot_longer(cols = everything(), names_to = c("Water", "Source"), names_sep = "\\.") |>
             drop_na() |>
+            dplyr::mutate(value = value * 1e-3) |> # convert to Mm3 ## 1e3 to m3 1e-6 to Mm3 = 1e-3
             dplyr::group_by(Water, Source) |>
             dplyr::summarise(value = mean(value)),
-        aes(xintercept = value / 1e6, color = Source), linetype = "dashed"
+        aes(xintercept = value, color = Source), linetype = "dashed"
     ) +
     scale_color_manual(values = c("#999999", "#E69F00", "#56B4E9")) +
     scale_fill_manual(values = c("#999999", "#E69F00", "#56B4E9")) +
-    labs(x = expression("Volume (M " * m^3 * ")"), y = "Density") +
+    labs(x = expression("Volume (Million " * phantom(" ") * m^3 * ")"), y = "Density") +
     theme_classic()
-
+dev.off()
 
 
 

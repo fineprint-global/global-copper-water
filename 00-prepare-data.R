@@ -2,7 +2,7 @@ source("utils.R")
 
 # Global copper mines - this dataset is not provided due to copyright restrictions
 raw_data <- read_excel('./data/Copper data for analysis_20240503.xlsx') |> 
-  dplyr::mutate(id_mine = row_number()) 
+  dplyr::mutate(id_mine = row_number()) # add an unique id for each mine
 
 ### Add GRACE - Trends in Global Freshwater Availability from the Gravity Recovery and Climate Experiment (GRACE), v1 (2002 – 2016)
 #   Rodell, M., J. S. Famiglietti, D. N. Wiese, J. T. Reager, H. K. Beaudoing, F. W. Landerer, and M.-H. Lo. 2019. Trends in Global Freshwater Availability from the Gravity Recovery and Climate Experiment (GRACE). Palisades, New York: NASA Socioeconomic Data and Applications Center (SEDAC). https://doi.org/10.7927/H4TT4P2C.
@@ -80,8 +80,8 @@ sf_data$water_depletion <- extract(water_depletion, sf_data)[,2]
 sf_data$freshwater_availability <- extract(freshwater_availability, sf_data)[,2]
 sf_data$pop_density_mean <- extract(pop_density_mean, sf_data)[,2]
 sf_data$pop_density_slope <- extract(pop_density_slope, sf_data)[,2]
-sf_data$ai_annual <- extract(ai_annual, sf_data)[,2] * 0.0001
-sf_data$et0_annual <- extract(et0_annual, sf_data)[,2] * 0.0001
+sf_data$ai_annual <- extract(ai_annual, sf_data)[,2] * 0.0001 # correct scale
+sf_data$et0_annual <- extract(et0_annual, sf_data)[,2] * 0.0001 # correct scale
 sf_use_s2(FALSE)
 sf_data <- st_join(sf_data, geological_unit)
 sf_use_s2(TRUE)
@@ -94,22 +94,22 @@ ts_data <- select(raw_data, id_mine, `2015`, `2016`, `2017`, `2018`, `2019`, ToW
          year = str_replace_all(year, "RaWa_", ""),
          year = as.numeric(year)) |>
   pivot_wider(id_cols = c(id_mine, year), names_from = row_data, values_from = value) |> 
-  dplyr::mutate(production = ifelse(production == 0, NA, production),
+  dplyr::mutate(production = ifelse(production == 0, NA, production), # replace 0 with NA since they are actually missing data not zero
          total_water = ifelse(total_water == 0, NA, total_water),
          raw_water = ifelse(raw_water == 0, NA, raw_water)) |> 
   left_join(st_drop_geometry(sf_data)) |> 
-  dplyr::mutate(process_route = ifelse(process_route=="Other", "other", process_route),
-         process_route = ifelse(process_route=="0", "other", process_route), 
-         process_route = ifelse(process_route=="pyro/hydro", "pyro", process_route), 
+  dplyr::mutate(process_route = ifelse(process_route=="Other", "other", process_route), # harmonize to lowercase other 
+         process_route = ifelse(process_route=="0", "other", process_route), # harmonize zero to other 
+         process_route = ifelse(process_route=="pyro/hydro", "pyro", process_route), # merge "pyro/hydro" with "pyro" since there are not sufficient samples for "pyro/hydro"
          process_route = as.character(process_route),
          byproduct_group = as.character(byproduct_group),
          mine_type = tolower(as.character(mine_type)),
          ore_body_group = tolower(as.character(ore_body_group)),
-         mine_type = ifelse(mine_type=="open pit", "pit", mine_type),
-         byproduct_group = tolower(ifelse(byproduct_group == "CuCu", "CuNN", byproduct_group)),
-         process_route = tolower(ifelse(process_route == "other", NA, process_route)),
-         average_production = ifelse(average_production==0,NA,average_production)) |>
-  dplyr::mutate(id = row_number()) |>
+         mine_type = ifelse(mine_type=="open pit", "pit", mine_type), # simplify pit category
+         byproduct_group = tolower(ifelse(byproduct_group == "CuCu", "CuNN", byproduct_group)), # harmonize to lowercase
+         process_route = tolower(ifelse(process_route == "other", NA, process_route)), # replace other with NA since the data is actually missing
+         average_production = ifelse(average_production==0,NA,average_production)) |> # replace 0 with NA since they are actually missing data not zero
+  dplyr::mutate(id = row_number()) |> # add an unique id for each observation
   relocate(id, .before = id_mine)
 
 # Check data availability
@@ -122,7 +122,7 @@ ts_data |>
   ggplot(aes(x = value, y = after_stat(count), fill = water_use)) + 
   facet_wrap(~name, scales = "free") + 
   geom_bar(stat = 'count', position = "dodge", width = 0.7) + 
-  geom_text(stat='count', aes(label=..count..), vjust=-0.1, position = position_dodge(width = 0.7)) +
+  geom_text(stat='count', aes(label=after_stat(count)), vjust=-0.1, position = position_dodge(width = 0.7)) +
   scale_fill_grey(start = 0.8, end = 0.4) +
   theme_bw()
 dev.off()
@@ -187,12 +187,18 @@ model_data |>
   dplyr::filter(id %in% outliers_ids) |>
   select(id, id_mine, mine, country_code, year, raw_water, total_water, production, average_production)# write to write_csv2("./data/manual_correction_outliers.csv")
 
+# Remove outliers with strange or incorrect reported numbers
 corrections <- read_csv2("./data/manual_correction_outliers.csv") |>
   select(id, raw_water, total_water, production, average_production)
-
 model_data <- model_data |>
   rows_update(corrections, by = "id") |>
   select(-outlier_flag)
+
+# # Remove Antamina mine as it reports incorrect water data
+# model_data <- model_data |>
+#   dplyr::mutate(raw_water = ifelse(mine == "Antamina", NA, raw_water),
+#                 total_water = ifelse(mine == "Antamina", NA, total_water)) |>
+#   dplyr::mutate(id_mine = factor(id_mine))
 
 model_data |>
   dplyr::mutate(
@@ -204,8 +210,10 @@ model_data |>
     write_csv2("./data/ts_model_data.csv")
 
 # Fill predictors gaps using knn
+names(model_data)
 pred_data <- recipe(raw_water + total_water ~ ., data = model_data) |>
-  step_impute_knn(any_of(c("production", "ore_grade", "mine_type", "byproduct_group", "process_route")), impute_with = imp_vars(-any_of(c("id", "id_mine", "mine", "year"))), neighbors = 5,) |>
+  step_impute_knn(any_of(c("production", "ore_grade", "mine_type", "process_route")),
+                  impute_with = imp_vars(any_of(c("id", "mine", "year", "et0_annual"))), neighbors = 1,) |>
   prep() |>
   bake(model_data) |>
   dplyr::group_by(id_mine) |>
@@ -217,6 +225,15 @@ pred_data <- recipe(raw_water + total_water ~ ., data = model_data) |>
     ore_extracted = 100 * production / ore_grade,
     ratio_raw_water_ore = raw_water / ore_extracted,
     ratio_total_water_ore = total_water / ore_extracted)
+
+# aux <- model_data |>
+#   select(id, id_mine, mine, country_code, year, production, average_production, ore_grade, mine_type, process_route) |>
+#   filter(if_any(everything(), is.na))
+
+# pred_data |>
+#   dplyr::filter(id_mine %in% unique(aux$id_mine)) |>
+#   select(id, id_mine, mine, country_code, year, raw_water, total_water, production, average_production, ore_grade, mine_type, process_route) |>
+#   View()
 
 write_csv2(pred_data, "./data/ts_pred_data.csv")
 
@@ -274,6 +291,3 @@ outliers_iqr <- dplyr::filter(pred_data2, raw_water_intensity < (q1 - multiplier
 
 outliers_iqr
 
-
-rm(list = ls())
-gc(reset = TRUE, full = TRUE)

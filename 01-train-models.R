@@ -1,9 +1,6 @@
 # load dependencies
 source("utils.R")
 
-# set seed for reproducibility - results are similar using several different seeds
-set.seed(9867)
-
 # Define models to try
 models <- c("lm", "ridge", "lasso", "rpart", "rf", "gbm", "svmRadial", "qrf")
 names(models) <- models
@@ -19,13 +16,18 @@ model_data <- read_csv2("./data/ts_model_data.csv") |>
 ####                            RAW WATER
 ####
 ################################################################################
+# set seed for reproducibility - results are similar using several different seeds
+set.seed(9867)
 
 rw_df <- model_data |>
-  select(target = raw_water_intensity, production, average_production, ore_extracted, ore_grade, et0_annual, mine_type) |>
+  select(target = raw_water_intensity, production, ore_extracted, average_production, et0_annual, process_route) |>
   drop_na()
 
+table(interaction(model_data$process_route, drop = TRUE))
+table(interaction(rw_df$process_route, drop = TRUE))
+
 # Splitting the data into training and test sets
-rw_strata <- c("mine_type")
+rw_strata <- c("process_route")
 rw_trainIndex <- createDataPartition(interaction(rw_df[,rw_strata], drop = TRUE), p = 0.8, list = FALSE)
 
 # Data augmentation by oversampling underrepresented quantile
@@ -60,8 +62,6 @@ rw_recipe <- recipe(target ~ ., data = rw_train_data) |>
   step_center(all_numeric_predictors()) |>
   step_scale(all_numeric_predictors()) |>
   step_interact(terms = ~ all_numeric_predictors() * all_numeric_predictors()) |>
-  #step_poly(all_numeric_predictors(), degree = 2) |>
-  #step_lencode_glm(all_nominal_predictors(), outcome = vars(target)) |>
   step_dummy(all_nominal_predictors()) |>
   step_nzv(all_predictors())
 
@@ -93,25 +93,26 @@ get_residuals <- function(model, test_data) {
 # Create a combined data frame with residuals for each model
 residuals_data <- bind_rows(
   lapply(names(rw_trained_models), function(model_name) {
-    get_residuals(rw_trained_models[[model_name]], rw_test_data) %>%
+    get_residuals(rw_trained_models[[model_name]], rw_test_data) |>
       mutate(model = model_name)
   })
 )
 
 # Q-Q Plots of trained models
-png(filename = "./results/rw_qq_plot_trained_models.png", width = 250, height = 350, units = "mm", pointsize = 12, res = 300, bg = "white")
+png(filename = "./results/rw_qq_plot_trained_models.png", width = 250, height = 250, units = "mm", pointsize = 12, res = 300, bg = "white")
 ggplot(residuals_data, aes(sample = residuals)) +
   stat_qq() +
   stat_qq_line() +
   facet_wrap(~ model, scales = "fixed") +
-  labs(title = "Q-Q Plot of Residuals by Model", x = "Theoretical Quantiles", y = "Sample Quantiles") +
+  labs(title = "", x = "Theoretical Quantiles", y = "Sample Quantiles") +
   theme_minimal()
 dev.off()
 
-png(filename = "./results/rw_distribution_trained_models.png", width = 250, height = 350, units = "mm", pointsize = 12, res = 300, bg = "white")
+
+png(filename = "./results/rw_distribution_trained_models.png", width = 250, height = 250, units = "mm", pointsize = 12, res = 300, bg = "white")
 ggplot(residuals_data, aes(x = residuals)) +
   geom_histogram(aes(y=after_stat(density)))+
-  facet_wrap(~ model, scales = "free") +
+  facet_wrap(~ model, scales = "fixed") +
   labs(title = "Distribution by Model") +
   theme_minimal()
 dev.off()
@@ -127,9 +128,13 @@ plot_models_performance(rw_trained_models)
 dev.off()
 
 # check significance
-resamples(rw_trained_models) |>
+rw_m_diff <- resamples(rw_trained_models) |>
   diff() |>
   summary()
+
+rw_m_diff
+
+write_csv(create_model_comparison_csv(rw_m_diff$table), "results/rw_models_diff.csv")
 
 # Predict and evaluate all models on the test set
 rw_models_test_performance <- lapply(rw_trained_models, function(model) {
@@ -137,9 +142,27 @@ rw_models_test_performance <- lapply(rw_trained_models, function(model) {
 }) |> 
   bind_rows() |>
   mutate(Model = models) |>
-  arrange(RMSE)
+  arrange(RMSE) |>
+  select(Model, RMSE, MAE, Rsquared)
 
 rw_models_test_performance
+
+write_csv(rw_models_test_performance, "results/rw_models_test_performace.csv")
+
+# Convert the data to long format for faceting
+rw_models_long <- rw_models_test_performance |>
+  pivot_longer(cols = c(RMSE, MAE, Rsquared), names_to = "Metric", values_to = "Value") |>
+  mutate(Model = factor(Model, levels = rw_models_test_performance |> arrange(RMSE) |> pull(Model))) |>
+  mutate(Metric = factor(Metric, levels = c("RMSE", "MAE", "Rsquared")))
+
+png(filename = "./results/rw_models_test_performance.png", width = 250, height = 120, units = "mm", pointsize = 12, res = 300, bg = "white")
+ggplot(rw_models_long, aes(x = Model, y = Value)) +
+  geom_bar(stat = "identity", fill = "gray") +  # Set all bars to gray
+  facet_wrap(~ Metric, scales = "free_y") +
+  labs(x = "Model", y = "Metric value") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+dev.off()
 
 ##################################
 #### tune best model for raw water
@@ -190,13 +213,13 @@ png(filename = "./results/rw_qq_plot_distribution_final_model.png", width = 250,
 qq_plot <- ggplot(predictions, aes(sample = residuals)) +
   stat_qq() +
   stat_qq_line() +
-  labs(title = "Q-Q Plot of Residuals by Model", x = "Theoretical Quantiles", y = "Sample Quantiles") +
+  labs(title = "", x = "Theoretical Quantiles", y = "Sample Quantiles") +
   theme_minimal()
 
 # Create the histogram plot
 hist_plot <- ggplot(predictions, aes(x = residuals)) +
   geom_histogram(aes(y=after_stat(density)), binwidth = 0.2, fill = "skyblue", color = "black", alpha = 0.7) +
-  labs(title = "Distribution by Model", x = "Residuals", y = "Density") +
+  labs(title = "", x = "Residuals", y = "Density") +
   theme_minimal()
 
 # Combine the plots
@@ -211,31 +234,38 @@ dev.off()
 ################################################################################
 
 tw_df <- model_data |>
-  select(total_water, raw_water, average_production, process_route) |>
+  select(target = total_water_intensity, ore_grade, raw_water_intensity, mine_type) |>
   drop_na()
 
 # Check categories
-table(interaction(model_data$process_route, drop = TRUE))
-table(interaction(tw_df$process_route, drop = TRUE))
+table(interaction(model_data$mine_type, drop = TRUE))
+table(interaction(tw_df$mine_type, drop = TRUE))
 
 # Create recipe - the order is important
-set.seed(3556)
-tw_recipe <- recipe(total_water ~ ., data = tw_df) |>
+set.seed(9867)
+tw_recipe <- recipe(target ~ ., data = tw_df) |>
   step_log(all_numeric(), base = 10) |>  
   step_center(all_numeric_predictors()) |>
   step_scale(all_numeric_predictors()) |>
+  step_interact(terms = ~ all_numeric_predictors() * all_numeric_predictors()) |>
   step_dummy(all_nominal_predictors()) |>
   step_nzv(all_predictors())
 
 # Splitting the data into training and test sets
-tw_trainIndex <- createDataPartition(tw_df$process_route, p = 0.8, list = FALSE)
+tw_trainIndex <- createDataPartition(tw_df$mine_type, p = 0.8, list = FALSE)
+
+# Data augmentation by oversampling underrepresented quantile
+tw_train_data <- training_oversampling_high_quantile(tw_df[tw_trainIndex,], "target", over_ratio = 0.7)
+table(tw_train_data$q_class)
+tw_train_data <- select(tw_train_data, -q_class)
+tw_test_data <- tw_df[-tw_trainIndex,]
 
 folds <- 5
 times <- 10
 train_control <- trainControl(method = "repeatedcv",
                               number = folds,
                               repeats = times,
-                              index = createMultiFolds(interaction(tw_df$process_route[tw_trainIndex], drop = TRUE), k = folds, times = times),
+                              index = createMultiFolds(interaction(tw_df$mine_type[tw_trainIndex], drop = TRUE), k = folds, times = times),
                               savePredictions = "all",
                               allowParallel = TRUE,
                               classProbs = FALSE,
@@ -254,6 +284,31 @@ tw_trained_models <- lapply(models, function(model) {
   return(out)
 })
 
+# Function to create predictions and residuals for a given model
+get_residuals <- function(model, test_data) {
+  test_data |>
+    mutate(predicted = 10^predict(model, test_data),
+           residuals = target - predicted)
+}
+
+# Create a combined data frame with residuals for each model
+tw_residuals_data <- bind_rows(
+  lapply(names(tw_trained_models), function(model_name) {
+    get_residuals(tw_trained_models[[model_name]], tw_test_data) |>
+      mutate(model = model_name)
+  })
+)
+
+# Q-Q Plots of trained models
+png(filename = "./results/tw_qq_plot_trained_models.png", width = 250, height = 250, units = "mm", pointsize = 12, res = 300, bg = "white")
+ggplot(tw_residuals_data, aes(sample = residuals)) +
+  stat_qq() +
+  stat_qq_line() +
+  facet_wrap(~ model, scales = "fixed") +
+  labs(title = "", x = "Theoretical Quantiles", y = "Sample Quantiles") +
+  theme_minimal()
+dev.off()
+
 # Models training performance
 resamps_stats <- get_resamples_stats(tw_trained_models)
 arrange(resamps_stats, Metric, Median)
@@ -265,13 +320,17 @@ plot_models_performance(tw_trained_models)
 dev.off()
 
 # check significance
-resamples(tw_trained_models) |>
+tw_m_diff <- resamples(tw_trained_models) |>
   diff() |>
   summary()
 
+tw_m_diff
+
+write_csv(create_model_comparison_csv(tw_m_diff$table), "results/tw_models_diff.csv")
+
 # Predict and evaluate all models on the test set
 tw_models_test_performance <- lapply(tw_trained_models, function(model) {
-  return(postResample(10^predict(model, newdata = tw_df[-tw_trainIndex, ]), tw_df[-tw_trainIndex, ]$total_water))
+  return(postResample(10^predict(model, newdata = tw_df[-tw_trainIndex, ]), tw_df[-tw_trainIndex, ]$target))
 }) |> 
   bind_rows() |>
   mutate(Model = models) |>
@@ -279,42 +338,36 @@ tw_models_test_performance <- lapply(tw_trained_models, function(model) {
 
 tw_models_test_performance
 
+write_csv(tw_models_test_performance, "results/rw_models_test_performace.csv")
+
+# Convert the data to long format for faceting
+tw_models_long <- tw_models_test_performance |>
+  pivot_longer(cols = c(RMSE, MAE, Rsquared), names_to = "Metric", values_to = "Value") |>
+  mutate(Model = factor(Model, levels = tw_models_test_performance |> arrange(RMSE) |> pull(Model))) |>
+  mutate(Metric = factor(Metric, levels = c("RMSE", "MAE", "Rsquared")))
+
+png(filename = "./results/tw_models_test_performance.png", width = 250, height = 120, units = "mm", pointsize = 12, res = 300, bg = "white")
+ggplot(tw_models_long, aes(x = Model, y = Value)) +
+  geom_bar(stat = "identity", fill = "gray") +  # Set all bars to gray
+  facet_wrap(~ Metric, scales = "free_y") +
+  labs(x = "Model", y = "Metric value") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+dev.off()
 
 #### Best model retrain 
-
-# # Define the control using cross-validation
-# folds <- 5
-# train_control <- trainControl(
-#   method = "cv",
-#   index = createFolds(interaction(tw_df$process_route[tw_trainIndex], drop = TRUE), k = folds),
-#   number = folds)
-
-# # Train the final model 
-# tw_final_model <- train(tw_recipe, 
-#                      data = tw_df[tw_trainIndex, ], 
-#                      method = "lm", 
-#                      trControl = train_control)
-
-# # Predict on the test set
-# predict(tw_final_model, newdata = tw_df[-tw_trainIndex, ]) |>
-#   postResample(tw_df[-tw_trainIndex, ]$total_water) |>
-#   round(2)
-
-# summary(tw_df[-tw_trainIndex, ]$total_water)
-
-# write_rds(tw_final_model, file = "./results/tw_final_model.rds")
 
 folds <- 5
 train_control <- trainControl(
   method = "cv",
-  index = createFolds(interaction(tw_df$process_route[tw_trainIndex], drop = TRUE), k = folds),
+  index = createFolds(interaction(tw_df$mine_type[tw_trainIndex], drop = TRUE), k = folds),
   number = folds)
 
 # Define the tuning grid for RF
 tune_grid <- expand.grid(mtry = seq(2, ncol(bake(prep(tw_recipe), tw_df[tw_trainIndex,])) - 1, by = 1))
 
 # Train the RF model with hyperparameter tuning
-tuned_rf <- train(tw_recipe,
+tw_tuned_rf <- train(tw_recipe,
                   data = tw_df[tw_trainIndex, ], 
                   method = "rf", 
                   ntree = 1000,
@@ -322,7 +375,7 @@ tuned_rf <- train(tw_recipe,
                   tuneGrid = tune_grid)
 
 png(filename = "./results/tw_rf_hyperparameter_tuning.png", width = 250, height = 120, units = "mm", pointsize = 12, res = 300, bg = "white")
-plot(tuned_rf)
+plot(tw_tuned_rf)
 dev.off()
 
 # Train the final model on the entire training set with the best hyperparameters
@@ -331,30 +384,36 @@ tw_final_model <- train(tw_recipe,
                      method = "rf", 
                      ntree = 1000,
                      trControl = trainControl(method = "none"), 
-                     tuneGrid = tuned_rf$bestTune)
+                     tuneGrid = tw_tuned_rf$bestTune)
 
 # Predict on the test set
 10^predict(tw_final_model, newdata = tw_df[-tw_trainIndex, ]) |>
-  postResample(tw_df[-tw_trainIndex, ]$total_water) |>
+  postResample(tw_df[-tw_trainIndex, ]$target) |>
   round(2)
 
-summary(tw_df[-tw_trainIndex, ]$total_water)
+summary(tw_df[-tw_trainIndex, ]$target)
 
-write_rds(rw_final_model, file = "./results/tw_final_model.rds")
+write_rds(tw_final_model, file = "./results/tw_final_model.rds")
 
 # Create a data frame with the actual values, predicted values, and residuals
 predictions <- tw_df |>
-  mutate(predicted = 10^predict(tw_final_model, tw_df), residuals = total_water - predicted)
+  mutate(predicted = 10^predict(tw_final_model, tw_df), residuals = target - predicted)
 
-# Q-Q Plot
-ggplot(predictions, aes(sample = residuals)) +
+# Q-Q Plots of trained models
+png(filename = "./results/tw_qq_plot_distribution_final_model.png", width = 250, height = 120, units = "mm", pointsize = 12, res = 300, bg = "white")
+qq_plot <- ggplot(predictions, aes(sample = residuals)) +
   stat_qq() +
   stat_qq_line() +
   labs(title = "Q-Q Plot of Residuals", x = "Theoretical Quantiles", y = "Sample Quantiles") +
   theme_minimal()
 
+# Create the histogram plot
+hist_plot <- ggplot(predictions, aes(x = residuals)) +
+  geom_histogram(aes(y=after_stat(density)), fill = "skyblue", color = "black", alpha = 0.7) +
+  labs(title = "", x = "Residuals", y = "Density") +
+  theme_minimal()
 
+# Combine the plots
+qq_plot | hist_plot
+dev.off()
 
-
-rm(list = ls())
-gc(reset = TRUE, full = TRUE)
