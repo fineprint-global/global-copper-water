@@ -90,6 +90,8 @@ predictions_filled <- predictions |>
     left_join(raw_data, by = join_by(id)) |>
     dplyr::mutate(raw_water = ifelse(is.na(raw_water), rw_pred, raw_water),
                   total_water = ifelse(is.na(total_water), tw_pred, total_water)) |>
+    # dplyr::mutate(raw_water = ifelse(is.na(production == 0), 0, raw_water),
+    #               total_water = ifelse(is.na(production == 0), 0, total_water)) |> # set water use to zero is production equal to zero 
     dplyr::select(-rw_pred, -tw_pred)
 
 predictions_filled |>
@@ -124,7 +126,3 @@ predictions |>
     theme_classic()
 dev.off()
 
-
-
-rm(list = ls())
-gc(reset = TRUE, full = TRUE)

@@ -4,6 +4,15 @@ source("utils.R")
 water_data <- read_csv2("./data/final_predictions.csv") |>
     dplyr::mutate(total_water = total_water * 1e-3, raw_water = raw_water * 1e-3) # convert from ML to Mm3
 
+# check raw water against coefficients 0.45 to 0.6 m3 per tonne of ore
+drop_na(transmute(water_data, tw_lw = 100 * production / ore_grade * 0.45 * 1e-6, tw_up = 100 * production / ore_grade * 0.6 * 1e-6, raw_water)) |> summarise(across(everything(), sum))
+
+# raw water intensity per tonne of ore
+drop_na(transmute(water_data, raw_water_int = raw_water / (100 * production / ore_grade) * 1e6)) |> summary() # m3/tonne
+
+# raw water intensity per tonne of copper 
+drop_na(transmute(water_data, raw_water_int = raw_water / production * 1e6)) |> summary() # m3/tonne
+
 sf_data <- st_read("./data/sf_data_raw.gpkg")
 
 bg_map = plot_goode_homolosine_world_map(ocean_color = NA, land_color = "gray95", family = "Sans",

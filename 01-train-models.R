@@ -208,6 +208,8 @@ write_rds(rw_final_model, file = "./results/rw_final_model.rds")
 predictions <- rw_test_data |>
   mutate(predicted = 10^predict(rw_final_model, rw_test_data), residuals = target - predicted)
 
+summary(rw_df[-rw_trainIndex, ]$target)
+
 # Q-Q Plots of trained models
 png(filename = "./results/rw_qq_plot_distribution_final_model.png", width = 250, height = 120, units = "mm", pointsize = 12, res = 300, bg = "white")
 qq_plot <- ggplot(predictions, aes(sample = residuals)) +
@@ -250,6 +252,11 @@ tw_recipe <- recipe(target ~ ., data = tw_df) |>
   step_interact(terms = ~ all_numeric_predictors() * all_numeric_predictors()) |>
   step_dummy(all_nominal_predictors()) |>
   step_nzv(all_predictors())
+
+# Check sample features ratio (usually 5 times more samples than features)
+if(!5 < nrow(bake(prep(tw_recipe), tw_train_data)) / ncol(bake(prep(tw_recipe), tw_train_data))-1){
+  stop("Number of samples smaller than 5 times the number of features")
+}
 
 # Splitting the data into training and test sets
 tw_trainIndex <- createDataPartition(tw_df$mine_type, p = 0.8, list = FALSE)
