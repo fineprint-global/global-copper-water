@@ -1,11 +1,11 @@
 source("utils.R")
 
 # Load data
-water_data <- read_csv2("./data/final_predictions.csv") |>
+water_data <- read_csv2("./results/final_predictions.csv") |>
     dplyr::mutate(total_water = total_water * 1e-3, raw_water = raw_water * 1e-3) # convert from ML to Mm3
 
 # check raw water against coefficients 0.45 to 0.6 m3 per tonne of ore
-drop_na(transmute(water_data, tw_lw = 100 * production / ore_grade * 0.45 * 1e-6, tw_up = 100 * production / ore_grade * 0.6 * 1e-6, raw_water)) |> summarise(across(everything(), sum))
+drop_na(transmute(water_data, tw_lw = 100 * production / ore_grade * 0.45 * 1e-6, tw_up = 100 * production / ore_grade * 0.6 * 1e-6, raw_water)) |> reframe(across(everything(), sum))
 
 # raw water intensity per tonne of ore
 drop_na(transmute(water_data, raw_water_int = raw_water / (100 * production / ore_grade) * 1e6)) |> summary() # m3/tonne
@@ -121,7 +121,8 @@ dev.off()
 ### Calculate local water use trend using GWR
 
 gwr_data <- left_join(sf_data, water_data, by = join_by(id_mine)) |>
-    select(id_mine, year, raw_water, total_water)
+    select(id_mine, year, raw_water, total_water) |>
+    drop_na(raw_water, total_water)
 
 # Check for spatial autocorrelation using Moran's I
 coords <- st_coordinates(gwr_data) |>
@@ -186,7 +187,8 @@ rw_gwr_res <- as(rw_gwr_model$SDF, "sf") |>
   as_tibble() |>
   dplyr::group_by(id_mine) |>
   dplyr::summarise(across(everything(), unique)) |>
-  dplyr::right_join(sf_data)
+  dplyr::right_join(sf_data) |>
+  mutate(raw_water_trend = year)
 
 tw_gwr_res <- as(tw_gwr_model$SDF, "sf") |>
   dplyr::mutate(id_mine = gwr_data$id_mine) |>
@@ -195,7 +197,8 @@ tw_gwr_res <- as(tw_gwr_model$SDF, "sf") |>
   as_tibble() |>
   dplyr::group_by(id_mine) |>
   dplyr::summarise(across(everything(), unique)) |>
-  dplyr::right_join(sf_data)  
+  dplyr::right_join(sf_data) |>
+  mutate(total_water_trend = year)
 
 trend_data <- water_data |>
   select(id_mine, year, raw_water, total_water, freshwater_availability, average_production, production) |>
@@ -207,9 +210,8 @@ trend_data <- water_data |>
     average_production = mean(average_production, na.rm = TRUE) * 1e-6, # from t to Mt
     cum_production = sum(production, na.rm = TRUE) * 1e-6 # from t to Mt
   ) |>
-  dplyr::mutate(
-    raw_water_trend = rw_gwr_res$year,
-    total_water_trend = tw_gwr_res$year) |> # trend from GWR
+  left_join(select(rw_gwr_res, id_mine, raw_water_trend)) |># trend from GWR
+  left_join(select(tw_gwr_res, id_mine, total_water_trend)) |># trend from GWR
   drop_na() |>
   dplyr::mutate(quadrant = case_when(
     raw_water_trend > 0 & freshwater_availability > 0 ~ "Q1",
@@ -269,10 +271,9 @@ bg_map +
             scale_color_brewer(palette = "Set1") +
             labs(color = "Quadrant") +
             guides(color = guide_legend(override.aes = list(size = 4))) 
- dev.off()
+dev.off()
 
 
- 
 left_join(sf_data, trend_data, by = join_by(id_mine)) |>
     st_write(dsn = "./results/trend_data.csv", delete_dsn = TRUE)
 

@@ -21,6 +21,7 @@ set.seed(9867)
 
 rw_df <- model_data |>
   select(target = raw_water_intensity, production, ore_extracted, average_production, et0_annual, process_route) |>
+  filter(production != 0, ore_extracted != 0) |>
   drop_na()
 
 table(interaction(model_data$process_route, drop = TRUE))
@@ -220,7 +221,7 @@ qq_plot <- ggplot(predictions, aes(sample = residuals)) +
 
 # Create the histogram plot
 hist_plot <- ggplot(predictions, aes(x = residuals)) +
-  geom_histogram(aes(y=after_stat(density)), binwidth = 0.2, fill = "skyblue", color = "black", alpha = 0.7) +
+  geom_histogram(aes(y=after_stat(density)), binwidth = 0.1, fill = "skyblue", color = "black", alpha = 0.7) +
   labs(title = "", x = "Residuals", y = "Density") +
   theme_minimal()
 
@@ -253,11 +254,6 @@ tw_recipe <- recipe(target ~ ., data = tw_df) |>
   step_dummy(all_nominal_predictors()) |>
   step_nzv(all_predictors())
 
-# Check sample features ratio (usually 5 times more samples than features)
-if(!5 < nrow(bake(prep(tw_recipe), tw_train_data)) / ncol(bake(prep(tw_recipe), tw_train_data))-1){
-  stop("Number of samples smaller than 5 times the number of features")
-}
-
 # Splitting the data into training and test sets
 tw_trainIndex <- createDataPartition(tw_df$mine_type, p = 0.8, list = FALSE)
 
@@ -266,6 +262,11 @@ tw_train_data <- training_oversampling_high_quantile(tw_df[tw_trainIndex,], "tar
 table(tw_train_data$q_class)
 tw_train_data <- select(tw_train_data, -q_class)
 tw_test_data <- tw_df[-tw_trainIndex,]
+
+# Check sample features ratio (usually 5 times more samples than features)
+if(!5 < nrow(bake(prep(tw_recipe), tw_train_data)) / ncol(bake(prep(tw_recipe), tw_train_data))-1){
+  stop("Number of samples smaller than 5 times the number of features")
+}
 
 folds <- 5
 times <- 10
@@ -416,7 +417,7 @@ qq_plot <- ggplot(predictions, aes(sample = residuals)) +
 
 # Create the histogram plot
 hist_plot <- ggplot(predictions, aes(x = residuals)) +
-  geom_histogram(aes(y=after_stat(density)), fill = "skyblue", color = "black", alpha = 0.7) +
+  geom_histogram(aes(y=after_stat(density)), binwidth = 0.1, fill = "skyblue", color = "black", alpha = 0.7) +
   labs(title = "", x = "Residuals", y = "Density") +
   theme_minimal()
 

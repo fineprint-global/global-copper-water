@@ -1,7 +1,7 @@
 source("utils.R")
 
 # Global copper mines - this dataset is not provided due to copyright restrictions
-raw_data <- read_excel('./data/Copper data for analysis_20240503.xlsx') |> 
+raw_data <- read_excel('./data/Copper data for analysis_20241121.xlsx') |> 
   dplyr::mutate(id_mine = row_number()) # add an unique id for each mine
 
 ### Add GRACE - Trends in Global Freshwater Availability from the Gravity Recovery and Climate Experiment (GRACE), v1 (2002 – 2016)
@@ -40,6 +40,36 @@ if(!file.exists("./data/geological_unit.gpkg")){
 geological_unit <- read_sf("./data/geological_unit.gpkg")
 
 
+###### AWARE
+if(!file.exists("./data/aware.gpkg")){
+  print("Download AWARE index")
+  download.file("https://drive.usercontent.google.com/download?id=17HEOzLgVwWurZts1CkqYpX_tJw9WJ6kR&export=download&authuser=0", destfile = "data/aware.zip")
+  unzip("data/aware.zip", exdir = "data/aware")
+  aware <- read_sf("data/aware/AWARE_v1_2April_7th.kmz")
+  aware_entries <- st_drop_geometry(aware) |>
+    as_tibble() |>
+    rowwise() |>
+    mutate(data = list(extract_aware_values(description))) |>
+    select(data) |>
+    unnest_wider(data)
+  names(aware_entries) <- c("aware_consumption_m3", "aware_annual_agri", "aware_annual_non_agri", "aware_annual_unknown")
+  aware <- bind_cols(select(aware, geom = geometry), aware_entries)
+  st_write(aware, "./data/aware.gpkg")
+}
+aware <- read_sf("./data/aware.gpkg")
+
+###### aqueduct
+if(!file.exists("./data/aqueduct.gpkg")){
+  options(timeout = 300) 
+  print("Download WRI aqueduct")
+  download.file("https://files.wri.org/aqueduct/aqueduct-4-0-water-risk-data.zip", destfile = "data/aqueduct.zip")
+  unzip("data/aqueduct.zip", exdir = "data/aqueduct")
+  aqueduct <- read_sf("data/aqueduct/Aqueduct40_waterrisk_download_Y2023M07D05/GDB/Aq40_Y2023D07M05.gdb", layer = "baseline_annual")
+  select(aqueduct, aqueduct_bws_raw = bws_raw, aqueduct_bws_score = bws_score, aqueduct_bws_cat = bws_cat, aqueduct_bws_label = bws_label) |>
+    st_write("./data/aqueduct.gpkg")
+}
+aqueduct <- read_sf("./data/aqueduct.gpkg")
+
 # Download from: https://sedac.ciesin.columbia.edu/data/set/gpw-v4-population-density-rev11/data-download
 # Population Density, v4.11 (2000, 2005, 2010, 2015, 2020), 30 Min (55 km)
 if(file.exists("./data/gpw-v4-population-density-rev11_totpop_30_min_nc/gpw_v4_population_density_rev11_30_min.nc")){
@@ -70,7 +100,8 @@ sf_data <- select(raw_data, id_mine, Longitude, Latitude, REG_TOP_20, mine, snl_
     Latitude  = as.numeric(ifelse(Latitude == "Copper", 0, Latitude)),
     check_0  = Longitude == 0 & Latitude == 0, 
     Longitude = ifelse(check_0, NA, Longitude),
-    Latitude  = ifelse(check_0, NA, Latitude)) |> 
+    Latitude  = ifelse(check_0, NA, Latitude),
+    ore_grade = as.numeric(ifelse(ore_grade == "NA", "", ore_grade))) |> 
   select(-check_0) |> 
   dplyr::filter(!is.na(Longitude)) |>
   st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326, agr = "constant")
@@ -84,9 +115,12 @@ sf_data$ai_annual <- extract(ai_annual, sf_data)[,2] * 0.0001 # correct scale
 sf_data$et0_annual <- extract(et0_annual, sf_data)[,2] * 0.0001 # correct scale
 sf_use_s2(FALSE)
 sf_data <- st_join(sf_data, geological_unit)
+sf_data <- st_join(sf_data, aware)
+sf_data <- st_join(sf_data, aqueduct)
 sf_use_s2(TRUE)
 
 ts_data <- select(raw_data, id_mine, `2015`, `2016`, `2017`, `2018`, `2019`, ToWa_2015, RaWa_2015, ToWa_2016, RaWa_2016, ToWa_2017, RaWa_2017, ToWa_2018, RaWa_2018, ToWa_2019, RaWa_2019) |> 
+  mutate(across(all_of(starts_with("20")), ~ as.numeric(ifelse(.x == "NA", "", .x)))) |>
   pivot_longer(cols = -id_mine, names_to = "year", values_to = "value") |> 
   dplyr::mutate(row_data = ifelse(str_detect(year, "ToWa"), "total_water", 
                            ifelse(str_detect(year, "RaWa"), "raw_water", "production")), 
@@ -94,9 +128,10 @@ ts_data <- select(raw_data, id_mine, `2015`, `2016`, `2017`, `2018`, `2019`, ToW
          year = str_replace_all(year, "RaWa_", ""),
          year = as.numeric(year)) |>
   pivot_wider(id_cols = c(id_mine, year), names_from = row_data, values_from = value) |> 
-  dplyr::mutate(production = ifelse(production == 0, NA, production), # replace 0 with NA since they are actually missing data not zero
+  dplyr::mutate(
          total_water = ifelse(total_water == 0, NA, total_water),
-         raw_water = ifelse(raw_water == 0, NA, raw_water)) |> 
+         raw_water = ifelse(raw_water == 0, NA, raw_water)
+  ) |> 
   left_join(st_drop_geometry(sf_data)) |> 
   dplyr::mutate(process_route = ifelse(process_route=="Other", "other", process_route), # harmonize to lowercase other 
          process_route = ifelse(process_route=="0", "other", process_route), # harmonize zero to other 
@@ -185,8 +220,8 @@ model_data <- select(ts_data, id, id_mine, mine, country_code, year, raw_water, 
 outliers_ids <- dplyr::filter(model_data, id_mine %in% unique(as.character(dplyr::filter(model_data, outlier_flag == 1)$id_mine)))$id
 model_data |>
   dplyr::filter(id %in% outliers_ids) |>
-  select(id, id_mine, mine, country_code, year, raw_water, total_water, production, average_production)# write to write_csv2("./data/manual_correction_outliers.csv")
-
+  select(id, id_mine, mine, country_code, year, raw_water, total_water, production, average_production) |># write to write_csv2("./data/manual_correction_outliers.csv")
+  print(n = 40)
 # Remove outliers with strange or incorrect reported numbers
 corrections <- read_csv2("./data/manual_correction_outliers.csv") |>
   select(id, raw_water, total_water, production, average_production)
@@ -236,58 +271,3 @@ pred_data <- recipe(raw_water + total_water ~ ., data = model_data) |>
 #   View()
 
 write_csv2(pred_data, "./data/ts_pred_data.csv")
-
-################################################################################
-######## Check outliers
-
-# Fit a linear model
-model_data <- select(pred_data, id, id_mine, raw_water_intensity, production, ore_grade, process_route, mine_type, byproduct_group) |>
-  drop_na()
-
-model <- lm(raw_water_intensity ~ production + ore_grade + process_route + mine_type + byproduct_group, data = pred_data)
-
-# Calculate residuals
-model_data$residuals <- abs(residuals(model))
-
-# Identify large residuals
-outlier_threshold <- mean(model_data$residuals) + 2 * sd(model_data$residuals)
-outliers <- model_data$residuals > outlier_threshold
-outlier_data <- model_data[outliers, ]
-outlier_data |>
-  arrange(residuals)
-
-select(dplyr::filter(pred_data, id_mine == 329), any_of(c(names(model_data), "raw_water", "total_water")))
-
-ggplot(model_data, aes(sample = residuals)) +
-  stat_qq() +
-  stat_qq_line() +
-  labs(title = "Q-Q Plot of Residuals", x = "Theoretical Quantiles", y = "Sample Quantiles") +
-  theme_minimal()
-
-# Cook's Distance
-model_data$cooks_distance <- cooks.distance(model)
-
-# Identify influential points
-influential_threshold <- 4 / nrow(model_data)
-influential_points <- model_data$cooks_distance > influential_threshold
-
-# Calculate Z-scores
-pred_data2 <- pred_data |>
-  dplyr::mutate(raw_water_intensity_z = scale(raw_water_intensity, center = TRUE, scale = TRUE)[,1])
-
-# Identify outliers using Z-score
-outliers_z <- pred_data2 |>
-  dplyr::filter(abs(raw_water_intensity_z) > 3)
-
-# Calculate IQR and identify outliers
-iqr_value <- IQR(pred_data2$raw_water_intensity, na.rm = TRUE)
-q1 <- quantile(pred_data2$raw_water_intensity, 0.25, na.rm = TRUE)
-q3 <- quantile(pred_data2$raw_water_intensity, 0.75, na.rm = TRUE)
-
-# Choose a multiplier
-multiplier <- 2  # Less strict; adjust based on your data and needs
-
-outliers_iqr <- dplyr::filter(pred_data2, raw_water_intensity < (q1 - multiplier * iqr_value) | raw_water_intensity > (q3 + multiplier * iqr_value))
-
-outliers_iqr
-

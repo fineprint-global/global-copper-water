@@ -26,6 +26,8 @@ library(embed)
 library(patchwork)
 library(spgwr)
 library(spdep)
+library(xml2)
+library(rvest)
 
 dir.create("./data", showWarnings = FALSE, recursive = TRUE)
 dir.create("./results", showWarnings = FALSE, recursive = TRUE)
@@ -54,6 +56,29 @@ training_oversampling_quantile <- function(df, outcome, over_ratio = 0.5) {
 
   # Return the baked data
   bake(recipe, new_data = NULL)
+}
+
+# Function to parse HTML and extract specific values
+extract_aware_values <- function(html_text) {
+  page <- read_html(html_text)
+  keys <- c("Consumption_m3", "Annual agri", "Annual non-agri", "Annual unknown")
+  
+  # Extract all values in one pass
+  values <- page %>%
+    html_nodes(xpath = "//tr[td]/td") %>%
+    html_text(trim = TRUE)
+  
+  # Create a named vector with extracted values
+  result <- sapply(keys, function(key) {
+    match_idx <- which(values == key)
+    if (length(match_idx) > 0 && (match_idx + 1) <= length(values)) {
+      as.numeric(values[match_idx + 1])
+    } else {
+      NA
+    }
+  })
+  
+  return(as.list(result))
 }
 
 training_oversampling_quantile <- function(df, outcome, over_ratio = 0.5) {

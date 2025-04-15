@@ -14,7 +14,8 @@ tw_model_vars <- unique(tw_model$recipe$var_info$variable[tw_model$recipe$var_in
 raw_data <- read_csv2("./data/ts_data_raw.csv")
 new_data <- read_csv2("./data/ts_pred_data.csv") |>
     dplyr::select(id, country_code, all_of(c(rw_model_vars, tw_model_vars, "raw_water", "total_water", "raw_water_intensity", "total_water_intensity"))) |>
-    dplyr::mutate_if(is.character, as.factor)
+    dplyr::mutate_if(is.character, as.factor) |>
+    filter(production != 0, ore_extracted != 0) 
 
 ## Check error dependency 
 #predict(rw_model, dplyr::mutate(new_data, target = NA)) # it seems recipe needs a placeholder for the target column
@@ -98,8 +99,6 @@ predictions_filled |>
   dplyr::transmute(raw_water, total_water) |>
   dplyr::summarise(across(everything(), sum) * 1e-6) # 1e3 to m3 1e-9 to Bm3
 
-write_csv2(predictions_filled, "./results/final_predictions.csv")
-
 png(filename = "./results/density_plot_final_predictions.png", width = 250, height = 120, units = "mm", pointsize = 12, res = 300, bg = "white")
 predictions |>
     dplyr::select(`Raw Water.Reference` = raw_water, `Total Water.Reference` = total_water, `Raw Water.Predicted` = rw_pred, `Total Water.Predicted` = tw_pred) |>
@@ -126,3 +125,9 @@ predictions |>
     theme_classic()
 dev.off()
 
+predictions_filled <- select(sf_data <- st_read("./data/sf_data_raw.gpkg"), id_mine, starts_with("aware_"), starts_with("aqueduct_")) |>
+  st_drop_geometry() |>
+  as_tibble() |>
+  right_join(predictions_filled)
+
+write_csv2(predictions_filled, "./results/final_predictions.csv")
