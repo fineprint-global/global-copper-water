@@ -20,7 +20,7 @@ model_data <- read_csv2("./data/ts_model_data.csv") |>
 set.seed(9867)
 
 rw_df <- model_data |>
-  select(target = raw_water_intensity, production, ore_extracted, average_production, et0_annual, process_route) |>
+  select(target = raw_water, production, ore_extracted, average_production, et0_annual, process_route) |>
   filter(production != 0, ore_extracted != 0) |>
   drop_na()
 
@@ -85,10 +85,16 @@ rw_trained_models <- lapply(models, function(model) {
 })
 
 # Function to create predictions and residuals for a given model
-get_residuals <- function(model, test_data) {
+get_residuals_log10 <- function(model, test_data) {
   test_data |>
     mutate(predicted = 10^predict(model, test_data),
            residuals = target - predicted)
+}
+
+get_residuals <- function(model, test_data) {
+  test_data |>
+    mutate(predicted = predict(model, test_data),
+           residuals = bake(prep(model$recipe), new_data = test_data)$target - predicted)
 }
 
 # Create a combined data frame with residuals for each model
@@ -139,7 +145,7 @@ write_csv(create_model_comparison_csv(rw_m_diff$table), "results/rw_models_diff.
 
 # Predict and evaluate all models on the test set
 rw_models_test_performance <- lapply(rw_trained_models, function(model) {
-  return(postResample(10^predict(model, newdata = rw_test_data), rw_test_data$target))
+  return(postResample(predict(model, newdata = rw_test_data), bake(prep(model$recipe), new_data = rw_test_data)$target))
 }) |> 
   bind_rows() |>
   mutate(Model = models) |>
@@ -198,18 +204,20 @@ rw_final_model <- train(rw_recipe,
                      tuneGrid = rw_tuned$bestTune)
 
 # Predict on the test set
-10^predict(rw_final_model, newdata = rw_test_data) |>
-  postResample(rw_test_data$target) |>
+predict(rw_final_model, newdata = rw_test_data) |>
+  postResample(bake(prep(rw_recipe), rw_test_data)$target) |>
   round(2)
 
-summary(rw_df$target)
+summary(bake(prep(rw_recipe), rw_df)$target)
 
 write_rds(rw_final_model, file = "./results/rw_final_model.rds")
 
 predictions <- rw_test_data |>
-  mutate(predicted = 10^predict(rw_final_model, rw_test_data), residuals = target - predicted)
+  mutate(predicted_log = predict(rw_final_model, rw_test_data), residuals = bake(prep(rw_recipe), rw_test_data)$target - predicted_log, predicted = 10^predicted_log)
 
-summary(rw_df[-rw_trainIndex, ]$target)
+summary(predictions[-rw_trainIndex, ][c('target', 'predicted')])
+
+shapiro.test(predictions$residuals)
 
 # Q-Q Plots of trained models
 png(filename = "./results/rw_qq_plot_distribution_final_model.png", width = 250, height = 120, units = "mm", pointsize = 12, res = 300, bg = "white")
@@ -237,7 +245,7 @@ dev.off()
 ################################################################################
 
 tw_df <- model_data |>
-  select(target = total_water_intensity, ore_grade, raw_water_intensity, mine_type) |>
+  select(target = total_water, ore_grade, raw_water, mine_type) |>
   drop_na()
 
 # Check categories
@@ -295,8 +303,8 @@ tw_trained_models <- lapply(models, function(model) {
 # Function to create predictions and residuals for a given model
 get_residuals <- function(model, test_data) {
   test_data |>
-    mutate(predicted = 10^predict(model, test_data),
-           residuals = target - predicted)
+    mutate(predicted = predict(model, test_data),
+           residuals = bake(prep(model$recipe), test_data)$target - predicted)
 }
 
 # Create a combined data frame with residuals for each model
@@ -338,7 +346,7 @@ write_csv(create_model_comparison_csv(tw_m_diff$table), "results/tw_models_diff.
 
 # Predict and evaluate all models on the test set
 tw_models_test_performance <- lapply(tw_trained_models, function(model) {
-  return(postResample(10^predict(model, newdata = tw_df[-tw_trainIndex, ]), tw_df[-tw_trainIndex, ]$target))
+  return(postResample(predict(model, newdata = tw_test_data), bake(prep(model$recipe), tw_test_data)$target))
 }) |> 
   bind_rows() |>
   mutate(Model = models) |>
@@ -372,11 +380,11 @@ train_control <- trainControl(
   number = folds)
 
 # Define the tuning grid for RF
-tune_grid <- expand.grid(mtry = seq(2, ncol(bake(prep(tw_recipe), tw_df[tw_trainIndex,])) - 1, by = 1))
+tune_grid <- expand.grid(mtry = seq(2, ncol(bake(prep(tw_recipe), tw_train_data)) - 1, by = 1))
 
 # Train the RF model with hyperparameter tuning
 tw_tuned_rf <- train(tw_recipe,
-                  data = tw_df[tw_trainIndex, ], 
+                  data = tw_train_data, 
                   method = "rf", 
                   ntree = 1000,
                   trControl = train_control, 
@@ -387,25 +395,32 @@ plot(tw_tuned_rf)
 dev.off()
 
 # Train the final model on the entire training set with the best hyperparameters
-tw_final_model <- train(tw_recipe, 
-                     data = tw_df[tw_trainIndex, ], 
+tw_final_model <- train(tw_recipe,
+                     data = tw_train_data, 
                      method = "rf", 
                      ntree = 1000,
                      trControl = trainControl(method = "none"), 
                      tuneGrid = tw_tuned_rf$bestTune)
 
 # Predict on the test set
-10^predict(tw_final_model, newdata = tw_df[-tw_trainIndex, ]) |>
-  postResample(tw_df[-tw_trainIndex, ]$target) |>
+predict(tw_final_model, newdata = tw_test_data) |>
+  postResample(bake(prep(tw_recipe), tw_test_data)$target) |>
   round(2)
 
-summary(tw_df[-tw_trainIndex, ]$target)
+summary(bake(prep(tw_recipe), tw_df)$target)
 
 write_rds(tw_final_model, file = "./results/tw_final_model.rds")
 
 # Create a data frame with the actual values, predicted values, and residuals
 predictions <- tw_df |>
   mutate(predicted = 10^predict(tw_final_model, tw_df), residuals = target - predicted)
+
+predictions <- tw_test_data |>
+  mutate(predicted_log = predict(tw_final_model, tw_test_data), residuals = bake(prep(tw_recipe), tw_test_data)$target - predicted_log, predicted = 10^predicted_log)
+
+summary(predictions[-rw_trainIndex, ][c('target', 'predicted')])
+
+shapiro.test(predictions$residuals)
 
 # Q-Q Plots of trained models
 png(filename = "./results/tw_qq_plot_distribution_final_model.png", width = 250, height = 120, units = "mm", pointsize = 12, res = 300, bg = "white")

@@ -20,19 +20,19 @@ new_data <- read_csv2("./data/ts_pred_data.csv") |>
 ## Check error dependency 
 #predict(rw_model, dplyr::mutate(new_data, target = NA)) # it seems recipe needs a placeholder for the target column
 rw_pred <- predict_intervals_rf(object = rw_model,  df = dplyr::rename(new_data, target = raw_water)) |>
-    transmute(rw_int_pred = predicted,
-              rw_int_pred_sd = sqrt(predicted_sd^2 + 0^2))
+    transmute(rw_pred = predicted,
+              rw_pred_sd = sqrt(predicted_sd^2 + 0^2))
 
 ## convert raw water intensity to raw water volume
 new_data_filled <- new_data |>
     bind_cols(rw_pred) |>
-    dplyr::mutate(raw_water_intensity = ifelse(is.na(raw_water_intensity), rw_int_pred, raw_water_intensity))
+    dplyr::mutate(raw_water = ifelse(is.na(raw_water), rw_pred, raw_water))
 
 tw_pred <- predict_intervals_rf(tw_model, df = dplyr::mutate(new_data_filled, target = NA)) |>
-    select(tw_int_pred = predicted, tw_int_pred_sd = predicted_sd)
+    select(tw_pred = predicted, tw_pred_sd = predicted_sd)
 
-predictions <- bind_cols(select(new_data, id, raw_water, total_water, raw_water_intensity, total_water_intensity), rw_pred, tw_pred) |>
-    dplyr::mutate(rw_pred = rw_int_pred * new_data$production, tw_pred = tw_int_pred * new_data$production)
+predictions <- bind_cols(select(new_data, id, raw_water, total_water), rw_pred, tw_pred) |>
+    dplyr::mutate(rw_int_pred = rw_pred / new_data$production, tw_int_pred = tw_pred / new_data$production)
 
 # check error covariance
 # bind_cols(new_data, rw_pred, tw_pred) |>
@@ -65,7 +65,7 @@ predictions |>
     mutate(rw_err = raw_water - rw_pred, rw_abs_err = abs(rw_err), rw_squared_err = rw_err^2,
            tw_err = total_water - tw_pred, tw_abs_err = abs(tw_err), tw_squared_err = tw_err^2) |>
     summarise(
-        rw_mean.ref = mean(raw_water, na.rm = TRUE),
+        rw_mean.ref = log10(mean(raw_water, na.rm = TRUE)),
         rw_mean.pred = mean(rw_pred, na.rm = TRUE),
         rw_median.ref = median(raw_water, na.rm = TRUE),
         rw_median.pred = median(rw_pred, na.rm = TRUE), 
@@ -89,22 +89,22 @@ predictions |>
 predictions_filled <- predictions |>
     dplyr::select(id, rw_pred, tw_pred) |>
     left_join(raw_data, by = join_by(id)) |>
-    dplyr::mutate(raw_water = ifelse(is.na(raw_water), rw_pred, raw_water),
-                  total_water = ifelse(is.na(total_water), tw_pred, total_water)) |>
+    dplyr::mutate(rw_filled = ifelse(is.na(raw_water), rw_pred, raw_water),
+                  tw_filled = ifelse(is.na(total_water), tw_pred, total_water)) 
     # dplyr::mutate(raw_water = ifelse(is.na(production == 0), 0, raw_water),
     #               total_water = ifelse(is.na(production == 0), 0, total_water)) |> # set water use to zero is production equal to zero 
-    dplyr::select(-rw_pred, -tw_pred)
+    # dplyr::select(-rw_pred, -tw_pred)
 
 predictions_filled |>
-  dplyr::transmute(raw_water, total_water) |>
-  dplyr::summarise(across(everything(), sum) * 1e-6) # 1e3 to m3 1e-9 to Bm3
+  dplyr::transmute(rw_filled, tw_filled) |>
+  dplyr::summarise(across(everything(), sum) * 1e-6) # 1e3.ML -> m3, 1e-9.m3 -> Bm3
 
 png(filename = "./results/density_plot_final_predictions.png", width = 250, height = 120, units = "mm", pointsize = 12, res = 300, bg = "white")
 predictions |>
     dplyr::select(`Raw Water.Reference` = raw_water, `Total Water.Reference` = total_water, `Raw Water.Predicted` = rw_pred, `Total Water.Predicted` = tw_pred) |>
     pivot_longer(cols = everything(), names_to = c("Water", "Source"), names_sep = "\\.") |>
     drop_na() |>
-    dplyr::mutate(value = value * 1e-3) |> # convert to Mm3 ## 1e3 to m3 1e-6 to Mm3 = 1e-3
+    dplyr::mutate(value = value * 1e-3) |> # convert to Mm3 ## 1e3.ML -> m3, 1e-6.m3 -> Mm3
     ggplot(aes(x = value, color = Source, fill = Source)) +
     facet_wrap(Water ~ ., scales = "free_x") + 
     geom_histogram(aes(y = after_stat(density)), position = "identity", alpha = 0.5) +
@@ -114,7 +114,7 @@ predictions |>
             dplyr::select(`Raw Water.Reference` = raw_water, `Total Water.Reference` = total_water, `Raw Water.Predicted` = rw_pred, `Total Water.Predicted` = tw_pred) |>
             pivot_longer(cols = everything(), names_to = c("Water", "Source"), names_sep = "\\.") |>
             drop_na() |>
-            dplyr::mutate(value = value * 1e-3) |> # convert to Mm3 ## 1e3 to m3 1e-6 to Mm3 = 1e-3
+            dplyr::mutate(value = value * 1e-3) |> # convert to Mm3 ## 1e3.ML -> m3, 1e-6.m3 -> Mm3
             dplyr::group_by(Water, Source) |>
             dplyr::summarise(value = mean(value)),
         aes(xintercept = value, color = Source), linetype = "dashed"

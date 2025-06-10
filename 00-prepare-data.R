@@ -1,7 +1,7 @@
 source("utils.R")
 
 # Global copper mines - this dataset is not provided due to copyright restrictions
-raw_data <- read_excel('./data/Copper data for analysis_20241121.xlsx') |> 
+raw_data <- read_excel('./data/Copper data for analysis_20250227.xlsx') |> 
   dplyr::mutate(id_mine = row_number()) # add an unique id for each mine
 
 ### Add GRACE - Trends in Global Freshwater Availability from the Gravity Recovery and Climate Experiment (GRACE), v1 (2002 – 2016)
@@ -141,7 +141,7 @@ ts_data <- select(raw_data, id_mine, `2015`, `2016`, `2017`, `2018`, `2019`, ToW
          mine_type = tolower(as.character(mine_type)),
          ore_body_group = tolower(as.character(ore_body_group)),
          mine_type = ifelse(mine_type=="open pit", "pit", mine_type), # simplify pit category
-         byproduct_group = tolower(ifelse(byproduct_group == "CuCu", "CuNN", byproduct_group)), # harmonize to lowercase
+        #  byproduct_group = tolower(ifelse(byproduct_group == "CuCu", "CuNN", byproduct_group)), # harmonize to lowercase
          process_route = tolower(ifelse(process_route == "other", NA, process_route)), # replace other with NA since the data is actually missing
          average_production = ifelse(average_production==0,NA,average_production)) |> # replace 0 with NA since they are actually missing data not zero
   dplyr::mutate(id = row_number()) |> # add an unique id for each observation
