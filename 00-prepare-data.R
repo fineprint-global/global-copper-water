@@ -151,7 +151,8 @@ ts_data <- select(raw_data, id_mine, `2015`, `2016`, `2017`, `2018`, `2019`, ToW
 png(filename = "./results/data_availability.png",
     width = 300, height = 200, units = "mm", pointsize = 12, res = 300, bg = "white")
 ts_data |>
-  select(total_water, raw_water, ore_body_group, process_route, mine_type, byproduct_group) |>
+  select(total_water, raw_water, ore_body_group, process_route, mine_type, byproduct_group, production_available = production, ore_grade_available = ore_grade) |>
+  mutate(production_available = as.character(!is.na(production_available)), ore_grade_available = as.character(!is.na(ore_grade_available))) |>
   pivot_longer(cols = -c(total_water, raw_water)) |> 
   pivot_longer(cols = c(total_water, raw_water), names_to = "water_use", values_to = "volume", values_drop_na = TRUE) |> 
   ggplot(aes(x = value, y = after_stat(count), fill = water_use)) + 
