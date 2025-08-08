@@ -4,6 +4,19 @@ source("utils.R")
 water_data <- read_csv2("./results/final_predictions.csv") |>
     dplyr::mutate(total_water = tw_pred * 1e-3, raw_water = rw_pred * 1e-3) # Get pred and convert from ML to Mm3
 
+transmute(read_csv2("./results/final_predictions.csv"),
+  mine_name = mine,
+  country_name = country,
+  region_name = region, year, 
+  # converted to m3
+  new_water_m3_ref = raw_water * 1e3,
+  new_water_m3_pred = rw_pred * 1e3,
+  total_water_m3_ref = total_water * 1e3,
+  total_water_m3_pred = tw_pred * 1e3
+  ) |>
+  arrange(desc(region_name), country_name, mine_name, year) |>
+  write_csv("./results/copper_mine_site_level_water_use_2015-2019.csv")
+
 sf_data <- st_read("./data/sf_data_raw.gpkg")
 
 # check raw water against coefficients 0.45 to 0.6 m3 per tonne of ore
