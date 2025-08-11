@@ -101,7 +101,7 @@ predictions_filled |>
 
 png(filename = "./results/density_plot_final_predictions.png", width = 250, height = 120, units = "mm", pointsize = 12, res = 300, bg = "white")
 predictions |>
-    dplyr::select(`Raw Water.Reference` = raw_water, `Total Water.Reference` = total_water, `Raw Water.Predicted` = rw_pred, `Total Water.Predicted` = tw_pred) |>
+    dplyr::select(`New Water.Reference` = raw_water, `Total Water.Reference` = total_water, `New Water.Predicted` = rw_pred, `Total Water.Predicted` = tw_pred) |>
     pivot_longer(cols = everything(), names_to = c("Water", "Source"), names_sep = "\\.") |>
     drop_na() |>
     dplyr::mutate(value = value * 1e-3) |> # convert to Mm3 ## 1e3.ML -> m3, 1e-6.m3 -> Mm3
@@ -111,7 +111,7 @@ predictions |>
     geom_density(alpha = 0.6, adjust = 1.5) +
     geom_vline(
         data = predictions |>
-            dplyr::select(`Raw Water.Reference` = raw_water, `Total Water.Reference` = total_water, `Raw Water.Predicted` = rw_pred, `Total Water.Predicted` = tw_pred) |>
+            dplyr::select(`New Water.Reference` = raw_water, `Total Water.Reference` = total_water, `New Water.Predicted` = rw_pred, `Total Water.Predicted` = tw_pred) |>
             pivot_longer(cols = everything(), names_to = c("Water", "Source"), names_sep = "\\.") |>
             drop_na() |>
             dplyr::mutate(value = value * 1e-3) |> # convert to Mm3 ## 1e3.ML -> m3, 1e-6.m3 -> Mm3
