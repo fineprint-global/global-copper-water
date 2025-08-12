@@ -4,19 +4,6 @@ source("utils.R")
 water_data <- read_csv2("./results/final_predictions.csv") |>
     dplyr::mutate(total_water = tw_pred * 1e-3, raw_water = rw_pred * 1e-3) # Get pred and convert from ML to Mm3
 
-transmute(read_csv2("./results/final_predictions.csv"),
-  mine_name = mine,
-  country_name = country,
-  region_name = region, year, 
-  # converted to m3
-  new_water_m3_ref = raw_water * 1e3,
-  new_water_m3_pred = rw_pred * 1e3,
-  total_water_m3_ref = total_water * 1e3,
-  total_water_m3_pred = tw_pred * 1e3
-  ) |>
-  arrange(desc(region_name), country_name, mine_name, year) |>
-  write_csv("./results/copper_mine_site_level_water_use_2015-2019.csv")
-
 sf_data <- st_read("./data/sf_data_raw.gpkg")
 
 # check raw water against coefficients 0.45 to 0.6 m3 per tonne of ore
@@ -205,10 +192,6 @@ draws |>
   geom_density(fill = "skyblue", alpha = 0.6) +
   facet_wrap(~ id_mine)
 
-# Optional: save to file
-write_csv(summary_df, "slope_summary_per_mine.csv")
-
-
 # 2.  Summarise per mine
 trend_by_mine <- draws |>
   group_by(id_mine) |>
@@ -252,7 +235,8 @@ df_avg_stats <- pred_mine_data |>
     rw_slope_uncertainty = unique(rw_slope_uncertainty),
     rw_water = mean(raw_water, na.rm = TRUE),
     tw_water = mean(total_water, na.rm = TRUE),
-    cum_water = sum(raw_water, na.rm = TRUE),
+    cum_rw = sum(raw_water, na.rm = TRUE),
+    cum_tw = sum(total_water, na.rm = TRUE),
     # rw_residuals = mean(rw_residuals, na.rm = TRUE),
     freshwater_availability = unique(freshwater_availability),
     freshwater_dir = factor(freshwater_availability<0, c(TRUE, FALSE), c('Negative', 'Positive')),
@@ -340,3 +324,36 @@ st_write(df_avg_stats, dsn = "./results/trend_data.csv", delete_dsn = TRUE)
 
 
 
+# Create data release
+transmute(read_csv2("./results/final_predictions.csv"),
+  mine_name = mine,
+  country_name = country,
+  region_name = region, year, 
+  # converted to m3
+  new_water_m3_ref = raw_water * 1e3,
+  new_water_m3_pred = rw_pred * 1e3,
+  total_water_m3_ref = total_water * 1e3,
+  total_water_m3_pred = tw_pred * 1e3
+  ) |>
+  arrange(desc(region_name), country_name, mine_name, year) |>
+  write_csv("./results/copper_mine_site_level_water_use_2015-2019.csv")
+
+select(water_data, mine, id_mine, aqueduct_bws_label, aware_annual_non_agri) |>
+  group_by(id_mine) |>
+  reframe(
+    mine = unique(mine),
+    aqueduct_bws_label = unique(aqueduct_bws_label),
+    aware_annual_non_agri = unique(aware_annual_non_agri)
+  ) |>
+  left_join(df_avg_stats) |>
+  select(
+    mine_name = mine,
+    new_water_slope_median = rw_median_slope,
+    new_water_slope_lower = rw_ci_lower,
+    new_water_slope_upper = rw_ci_upper,
+    freshwater_availability_trend = freshwater_availability,
+    avg_production = avg_production,
+    quadrant,
+    aware_annual_non_agri,
+    aqueduct_bws_label) |>
+    write_csv("./results/copper_mine_site_level_new_water_slope_2015-2019.csv")
