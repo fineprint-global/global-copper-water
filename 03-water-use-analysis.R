@@ -178,7 +178,6 @@ shapiro.test(mine_data$raw_water)
 shapiro.test(mine_data$raw_water_log)
 
 # Fit Bayesian mixed model
-library(brms)
 if(file.exists("./results/fit_bayes_trends.rds")){
   fit_bayes <- read_rds("./results/fit_bayes_trends.rds")
 } else {

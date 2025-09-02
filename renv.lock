@@ -1132,6 +1132,19 @@
       ],
       "Hash": "afe1507511629f44572e6c53b9baeb7c"
     },
+    "gbm": {
+      "Package": "gbm",
+      "Version": "2.2.2",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Requirements": [
+        "R",
+        "lattice",
+        "parallel",
+        "survival"
+      ],
+      "Hash": "17e2c9092ea23e84803fa07b62c5348a"
+    },
     "generics": {
       "Package": "generics",
       "Version": "0.1.3",
