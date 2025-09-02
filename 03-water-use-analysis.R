@@ -10,7 +10,7 @@
 #    spatial grid and generates a series of global maps to visualize water use
 #    hotspots by year.
 # 2. Water Use Slope Analysis: Fits a Bayesian mixed model using `brms` to estimate
-#    the long-term trends (2015-2019) in raw water consumption for each mine.
+#    the slope (2015-2019) in raw water consumption for each mine.
 #    The model uses default, weakly informative priors and is fitted with
 #    4 Markov Chain Monte Carlo (MCMC) chains, running for 6000 iterations
 #    with a 2000 iteration warmup period.
