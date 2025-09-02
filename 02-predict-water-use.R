@@ -1,3 +1,25 @@
+# ---
+# Script: 02-predict-water-use.R
+# Purpose: This script applies the trained machine learning models to the full
+#          dataset to generate comprehensive water use predictions and perform
+#          an initial high-level evaluation.
+#
+# Key Steps:
+# 1. Model and Data Loading: Loads the saved Random Forest models and the
+#    pre-processed data.
+# 2. Prediction Generation: Uses the loaded models to predict both raw water and
+#    total water volumes for all mining sites and time-series observations.
+# 3. Uncertainty Propagation: this script uses the prediction from the raw water 
+#    model to fill in missing values, ensuring that the uncertainty from the first 
+#    model is carried through to the total water prediction.
+# 4. Performance Evaluation: Compares the generated predictions against any
+#    available reference data points to calculate and summarize overall
+#    performance metrics (e.g., RMSE and MAE).
+# 5. Output: Saves the full dataset with the new, filled-in water use predictions
+#    to a CSV file for the final analysis and visualization.
+# ---
+
+
 # load dependencies
 source("utils.R")
 
@@ -34,32 +56,7 @@ tw_pred <- predict_intervals_rf(tw_model, df = dplyr::mutate(new_data_filled, ta
 predictions <- bind_cols(select(new_data, id, raw_water, total_water), rw_pred, tw_pred) |>
     dplyr::mutate(rw_int_pred = rw_pred / new_data$production, tw_int_pred = tw_pred / new_data$production)
 
-# check error covariance
-# bind_cols(new_data, rw_pred, tw_pred) |>
-#     dplyr::mutate(rw_pred = ifelse(is.na(raw_water), rw_intensity_pred * production, raw_water,
-#                   rw_err = rw_pred - raw_water, tw_err = tw_pred - total_water)) |>
-#     dplyr::select(rw_err, tw_err) |>
-#     drop_na() |>
-#     summarise(err_cov = cov(rw_err, tw_err), err_coef = err_cov / (sd(rw_err) * sd(tw_err))) 
-
-# err_coef: from -0.2 to +0.2 very weak or no association - error independency
-# rw_pred <- predict_intervals_rf(rw_model, new_data, log_base = 10) |>
-#     select(rw_pred = predicted, rw_sd = predicted_sd)
-
-# new_data_filled <- new_data
-# new_data_filled$raw_water <- ifelse(is.na(new_data_filled$raw_water), rw_pred$rw_pred, new_data_filled$raw_water)
-
-# tw_pred <- predict_intervals_rf(tw_model, new_data_filled, log_base = 10) |>
-#     select(tw_pred = predicted, tw_sd = predicted_sd)
-
-# Propagate uncertanty assuming error independency err_coef close to zero
-# z_score <- qnorm(1 - 0.05 / 2)
-# predictions <- bind_cols(new_data, rw_pred, tw_pred) |>
-#     dplyr::mutate(tw_sd_prop = ifelse(is.na(new_data$raw_water), sqrt(tw_sd^2 + rw_sd^2), tw_sd),
-#                   rw_lw = pmax(rw_pred - z_score * rw_sd, 0), rw_up = rw_pred + z_score * rw_sd,
-#                   tw_lw = pmax(tw_pred - z_score * tw_sd_prop, 0), tw_up = tw_pred + z_score * tw_sd_prop)
-
-# # Check overall MAE and RMSE against available data points
+# Check overall MAE and RMSE against available data points
 predictions |>
     dplyr::select(id, raw_water, total_water, rw_pred, tw_pred) |>
     mutate(rw_err = raw_water - rw_pred, rw_abs_err = abs(rw_err), rw_squared_err = rw_err^2,
@@ -91,9 +88,6 @@ predictions_filled <- predictions |>
     left_join(raw_data, by = join_by(id)) |>
     dplyr::mutate(rw_filled = ifelse(is.na(raw_water), rw_pred, raw_water),
                   tw_filled = ifelse(is.na(total_water), tw_pred, total_water)) 
-    # dplyr::mutate(raw_water = ifelse(is.na(production == 0), 0, raw_water),
-    #               total_water = ifelse(is.na(production == 0), 0, total_water)) |> # set water use to zero is production equal to zero 
-    # dplyr::select(-rw_pred, -tw_pred)
 
 predictions_filled |>
   dplyr::transmute(rw_filled, tw_filled) |>

@@ -1,3 +1,27 @@
+# ---
+# Script: 03-water-use-analysis.R
+# Purpose: This script performs the final geospatial and trend analysis of
+#          predicted water use data, focusing on the relationship between
+#          water use and freshwater availability. It generates the final
+#          visualizations and data products for the project.
+#
+# Key Steps:
+# 1. Geospatial Visualization: Aggregates the predicted water use data to a
+#    spatial grid and generates a series of global maps to visualize water use
+#    hotspots by year.
+# 2. Water Use Trend Analysis: Fits a Bayesian mixed model to estimate the
+#    slope (2015-2019) in raw water consumption for each mine,
+#    accounting for both global and site-specific variations.
+# 3. Quadrant Plot Analysis: Classifies each mine into a quadrant based on its
+#    water use slope (increasing/decreasing) and the local freshwater availability
+#    trend from GRACE. This identifies mines in "stress zones" that have increasing water
+#    use in areas with declining freshwater. 
+# 4. Output: Saves the final analysis results as CSV files, which include
+#    the trends, quadrant classifications, and other key summary statistics for
+#    each mining site.
+# ---
+
+
 source("utils.R")
 
 # Load data
@@ -275,40 +299,6 @@ ggplot(trend_by_mine, aes(x = id_mine, y = rw_median_slope)) +
   geom_hline(yintercept = 0, linetype = "dashed") +
   labs(y = "Yearly trend raw water use", x = "Mine ID", colour = "Confidence of trend direction")
 
-# png(filename = "./results/rw_quadrant_plot.png", width = 250, height = 200, units = "mm", pointsize = 12, res = 300, bg = "white")
-# ggplot(df_avg_stats, aes(x = rw_median_slope, y = freshwater_availability)) +
-#   geom_point(aes(size = avg_production, color = quadrant), alpha = 0.5, show.legend = c(color = FALSE, size = TRUE)) +
-#   scale_size_continuous(range = c(3, 15)) +
-#   scale_color_brewer(palette = "Set1") +
-#   scale_x_continuous(limits = c(-5e-7, 5e-7)) +
-#   geom_vline(xintercept = 0, color = "black") +
-#   geom_hline(yintercept = 0, color = "black") +
-#   #geom_text(data = annotation_positions, aes(x = x, y = y, label = label_total_ave), size = 5, fontface = "bold") +
-#   theme_minimal() +
-#   # labs(
-#   #   x = expression("Raw water use trend (Million" * phantom(" ") * m^3 * phantom(" ") * year^-1 * ")"),
-#   #   y = expression("Freshwater availability trend (" * cm * phantom(" ") * year^-1 * ")"),
-#   #   size = "Average production (Mt)"
-#   # ) +
-#   guides(size = guide_legend(position = "inside")) +
-#   theme(
-#     legend.direction = "vertical",
-#     legend.position.inside = c(0.85, 0.2),
-#     legend.background = element_rect(fill = "white", color = "black") # Optional: Add background and border for better visibility
-#   )
-# dev.off()
-
-# pred_mine_data %>%
-#   mutate(
-#     water_trend = case_when(rw_trend > 0 ~ "Increasing", rw_trend < 0 ~ "Decreasing", TRUE ~ "Stable"),
-#     fw_trend = ifelse(freshwater_availability < 0, "Declining FW", "Increasing FW")
-#   ) %>%
-#   count(water_trend, fw_trend) %>%
-#   ggplot(aes(x = fw_trend, y = n, fill = water_trend)) +
-#   geom_col(position = "fill") +
-#   labs(y = "Proportion of Mines", x = "Freshwater Availability Trend", fill = "Water Use Trend") +
-#   scale_y_continuous(labels = scales::percent) +
-#   theme_minimal()
 
 png(filename = "./results/rw_quadrant_map.png", width = 250, height = 150, units = "mm", pointsize = 12, res = 300, bg = "white")
 bg_map + 

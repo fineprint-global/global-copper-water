@@ -1,3 +1,29 @@
+# ---
+# Script: 01-train-models.R
+# Purpose: This script is the core machine learning component of the project. It
+#          is responsible for developing, training, and validating 
+#          models to predict both raw and total water consumption.
+#
+# Key Steps:
+# 1. Model Selection and Training: Defines and evaluates a comprehensive suite of
+#    regression models, including Random Forest (rf), Gradient Boosting Machine (gbm),
+#    and linear models (lm, ridge, lasso). This ensures a thorough search for the
+#    best-performing algorithm.
+# 2. Data Preparation and Augmentation: Employs stratified data splitting to
+#    create representative training and test sets. It also uses oversampling
+#    techniques to augment the training data, particularly for high-water-use
+#    observations, to prevent model bias.
+# 3. Recipe-Based Preprocessing: Uses the `recipes` package to define a consistent,
+#    reproducible preprocessing pipeline that includes data transformations (e.g., log),
+#    normalization, and dummy variable creation.
+# 4. Validation and Tuning: Performs repeated k-fold cross-validation to
+#    assess model performance. It then conducts hyperparameter
+#    tuning to optimize the best-performing model (Random Forest).
+# 5. Final Model Output: Saves the final, validated Random Forest models to disk
+#    for use in the prediction script. Only the final model for raw water and a the 
+#    final model for total water are saved to disk.
+# ---
+
 # load dependencies
 source("utils.R")
 
