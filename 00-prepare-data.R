@@ -51,7 +51,7 @@ water_mask <- rast("data/gpw_v4_data_quality_indicators_rev11_watermask_30_min.t
 # Water Depletion from WaterGap3
 if(!file.exists("data/WaterDepletion_WaterGap3.zip")){
   print("Download Water Depletion from WaterGap3")
-  download.file("https://s3.us-east-2.amazonaws.com/earthstatdata/WaterDepletion_WaterGap3.zip", destfile = "data/WaterDepletion_WaterGap3.zip")
+  download.file("https://storage.googleapis.com/earthstat/WaterDepletion_WaterGap3.zip", destfile = "data/WaterDepletion_WaterGap3.zip")
   unzip("data/WaterDepletion_WaterGap3.zip", exdir = "data/")
 }
 
@@ -96,15 +96,6 @@ if(!file.exists("./data/aqueduct.gpkg")){
 }
 aqueduct <- read_sf("./data/aqueduct.gpkg")
 
-# Download from: https://sedac.ciesin.columbia.edu/data/set/gpw-v4-population-density-rev11/data-download
-# Population Density, v4.11 (2000, 2005, 2010, 2015, 2020), 30 Min (55 km)
-if(file.exists("./data/gpw-v4-population-density-rev11_totpop_30_min_nc/gpw_v4_population_density_rev11_30_min.nc")){
- unzip("data/gpw-v4-population-density-rev11_totpop_30_min_nc.zip", exdir = "data/")
-}
-population_density <- rast("./data/gpw-v4-population-density-rev11_totpop_30_min_nc/gpw_v4_population_density_rev11_30_min.nc", lyrs = 1:5)
-pop_density_slope <- app(population_density, calc_slope)
-pop_density_mean <- app(population_density, "mean")
-
 # Global Aridity Index and Potential Evapotranspiration (ET0) Database: Version 3
 # Paper: https://www.nature.com/articles/s41597-022-01493-1
 if(!file.exists("./data/ai_et0/Global-AI_ET0_v3_annual/ai_v3_yr.tif")){
@@ -135,8 +126,6 @@ sf_data <- select(raw_data, id_mine, Longitude, Latitude, REG_TOP_20, mine, snl_
 # add extended layers
 sf_data$water_depletion <- extract(water_depletion, sf_data)[,2]
 sf_data$freshwater_availability <- extract(freshwater_availability, sf_data)[,2]
-sf_data$pop_density_mean <- extract(pop_density_mean, sf_data)[,2]
-sf_data$pop_density_slope <- extract(pop_density_slope, sf_data)[,2]
 sf_data$ai_annual <- extract(ai_annual, sf_data)[,2] * 0.0001 # correct scale
 sf_data$et0_annual <- extract(et0_annual, sf_data)[,2] * 0.0001 # correct scale
 sf_use_s2(FALSE)
