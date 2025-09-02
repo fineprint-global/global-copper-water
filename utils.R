@@ -36,6 +36,7 @@ library(lme4)
 library(spaMM)
 library(splm)
 library(plm)
+library(elasticnet)
 
 dir.create("./data", showWarnings = FALSE, recursive = TRUE)
 dir.create("./results", showWarnings = FALSE, recursive = TRUE)
