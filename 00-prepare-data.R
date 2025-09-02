@@ -101,7 +101,7 @@ aqueduct <- read_sf("./data/aqueduct.gpkg")
 if(!file.exists("./data/ai_et0/Global-AI_ET0_v3_annual/ai_v3_yr.tif")){
   print("Download Global Aridity Index and Potential Evapotranspiration (ET0) Database: Version 3")
   options(timeout = 1000)
-  download.file("https://figshare.com/ndownloader/articles/7504448/versions/5", destfile = "data/ai_et0.zip")
+  download.file("https://figshare.com/ndownloader/articles/7504448/versions/5", destfile = "data/ai_et0.zip", mode = "wb", headers = c("User-Agent" = "Mozilla/5.0"))
   options(timeout = 60)
   unzip("data/ai_et0.zip", files = "Global-AI_ET0_annual_v3.zip", exdir = "data/ai_et0")
   unzip("data/ai_et0/Global-AI_ET0_annual_v3.zip", exdir = "data/ai_et0")
