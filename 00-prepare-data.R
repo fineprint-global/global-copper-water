@@ -36,11 +36,15 @@ raw_data <- read_excel('./data/copper_data_20250227.xlsx') |>
 
 if(file.exists("data/sdei-trends-freshwater-availability-grace-2002-2016-geotiff.zip")){
  unzip("data/sdei-trends-freshwater-availability-grace-2002-2016-geotiff.zip", exdir = "data/")
+} else {
+ stop("Dowanload requires login to Earthdata. Download trend data from: https://sedac.ciesin.columbia.edu/downloads/data/sdei/sdei-trends-freshwater-availability-grace/sdei-trends-freshwater-availability-grace-2002-2016-geotiff.zip")
 }
 freshwater_availability <- rast("data/freshwater_availability.tif")
 
 if(file.exists("data/gpw-v4-data-quality-indicators-rev11_watermask_30_min_tif.zip")){
  unzip("data/gpw-v4-data-quality-indicators-rev11_watermask_30_min_tif.zip", exdir = "data/")
+} else {
+stop("Dowanload requires login to Earthdata. Download water mask data from: https://sedac.ciesin.columbia.edu/downloads/data/gpw-v4/gpw-v4-data-quality-indicators-rev11/gpw-v4-data-quality-indicators-rev11_watermask_30_min_tif.zip")
 }
 water_mask <- rast("data/gpw_v4_data_quality_indicators_rev11_watermask_30_min.tif")
 
