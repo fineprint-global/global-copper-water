@@ -1,6 +1,6 @@
 # ---
 # Script: 03-water-use-analysis.R
-# Purpose: This script performs the final geospatial and trend analysis of
+# Purpose: This script performs the final geospatial and slope analysis of
 #          predicted water use data, focusing on the relationship between
 #          water use and freshwater availability. It generates the final
 #          visualizations and data products for the project.
@@ -9,12 +9,14 @@
 # 1. Geospatial Visualization: Aggregates the predicted water use data to a
 #    spatial grid and generates a series of global maps to visualize water use
 #    hotspots by year.
-# 2. Water Use Trend Analysis: Fits a Bayesian mixed model to estimate the
-#    slope (2015-2019) in raw water consumption for each mine,
-#    accounting for both global and site-specific variations.
+# 2. Water Use Slope Analysis: Fits a Bayesian mixed model using `brms` to estimate
+#    the long-term trends (2015-2019) in raw water consumption for each mine.
+#    The model uses default, weakly informative priors and is fitted with
+#    4 Markov Chain Monte Carlo (MCMC) chains, running for 6000 iterations
+#    with a 2000 iteration warmup period.
 # 3. Quadrant Plot Analysis: Classifies each mine into a quadrant based on its
-#    water use slope (increasing/decreasing) and the local freshwater availability
-#    trend from GRACE. This identifies mines in "stress zones" that have increasing water
+#    water use trend (increasing/decreasing) and the local freshwater availability
+#    trend. This identifies mines in "stress zones" that have increasing water
 #    use in areas with declining freshwater. 
 # 4. Output: Saves the final analysis results as CSV files, which include
 #    the trends, quadrant classifications, and other key summary statistics for
