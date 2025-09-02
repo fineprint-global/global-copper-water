@@ -40,6 +40,7 @@ library(elasticnet)
 library(gbm)
 library(bayesplot)
 library(brms)
+library(kernlab)
 
 dir.create("./data", showWarnings = FALSE, recursive = TRUE)
 dir.create("./results", showWarnings = FALSE, recursive = TRUE)
