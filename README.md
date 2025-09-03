@@ -2,9 +2,7 @@
 
 -----
 
-### **global-copper-water**
-
-Machine learning for estimating water use in global copper mining.
+### Machine learning for estimating water use in global copper mining.
 
 -----
 
