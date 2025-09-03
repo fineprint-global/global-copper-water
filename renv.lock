@@ -2166,6 +2166,19 @@
       ],
       "Hash": "5f919ae5e7f83a6f91dcf2288943370d"
     },
+    "quantregForest": {
+      "Package": "quantregForest",
+      "Version": "1.3-7.1",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Requirements": [
+        "RColorBrewer",
+        "parallel",
+        "randomForest",
+        "stats"
+      ],
+      "Hash": "48660cf6cf0c3d876e193b1cd686873a"
+    },
     "randomForest": {
       "Package": "randomForest",
       "Version": "4.7-1.2",
