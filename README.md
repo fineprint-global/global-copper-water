@@ -1,7 +1,5 @@
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17044343.svg)](https://doi.org/10.5281/zenodo.17044343)
 
------
-
 ### Machine learning for estimating water use in global copper mining.
 
 -----
