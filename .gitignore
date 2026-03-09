@@ -4,3 +4,6 @@ results/
 .vscode/
 renv/
 Rplots.pdf
+report/
+.claude/
+model_data/

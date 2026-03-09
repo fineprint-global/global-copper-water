@@ -21,9 +21,12 @@
 # ---
 
 source("utils.R")
+model_data_dir <- file.path("model_data", format(Sys.time(), "%Y%m%d_%H%M%S"))
+dir.create(model_data_dir, recursive = TRUE)
+message("Model data will be saved to: ", model_data_dir)
 
 # Global copper mines - this dataset is not provided due to copyright restrictions
-raw_data <- read_excel('./data/copper_data_20250227.xlsx') |> 
+raw_data <- read_excel('./data/copper_data_20260302.xlsx') |> 
   dplyr::mutate(id_mine = row_number()) # add an unique id for each mine
 
 ### Add GRACE - Trends in Global Freshwater Availability from the Gravity Recovery and Climate Experiment (GRACE), v1 (2002 – 2016)
@@ -111,16 +114,11 @@ ai_annual <- rast("./data/ai_et0/Global-AI_ET0_v3_annual/ai_v3_yr.tif")
 et0_annual <- rast("./data/ai_et0/Global-AI_ET0_v3_annual/et0_v3_yr.tif")
 
 # pre-process copper data
-sf_data <- select(raw_data, id_mine, Longitude, Latitude, REG_TOP_20, mine, snl_id, country, country_code, region, cumulative_production, average_production, 
-                  byproduct_group = `by-prod-group\ 2`, mine_type = mine_type_combined, ore_body_group = `Ore Body Group`, process_route = `Process route`, ore_grade = `Ore Grade_combined`) |> 
-  dplyr::mutate(
-    Latitude  = as.numeric(ifelse(Latitude == "Copper", 0, Latitude)),
-    check_0  = Longitude == 0 & Latitude == 0, 
-    Longitude = ifelse(check_0, NA, Longitude),
-    Latitude  = ifelse(check_0, NA, Latitude),
-    ore_grade = as.numeric(ifelse(ore_grade == "NA", "", ore_grade))) |> 
-  select(-check_0) |> 
-  dplyr::filter(!is.na(Longitude)) |>
+sf_data <- select(
+  raw_data, id_mine, Longitude, Latitude, mine, snl_id, country, country_code, region, cumulative_production, average_production, byproduct_group = `by-prod-group\ 2`, 
+  mine_type = mine_type_combined, ore_body_group = `Ore Body Group Origin`,
+  process_route = `Process route`, ore_grade = `Ore Grade_combined`) |> 
+  dplyr::filter(!(is.na(Longitude)|is.na(Latitude))) |>
   st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326, agr = "constant")
 
 # add extended layers
@@ -134,6 +132,56 @@ sf_data <- st_join(sf_data, aware)
 sf_data <- st_join(sf_data, aqueduct)
 sf_use_s2(TRUE)
 
+# ---- TerraClimate climate predictors (year-specific, per mine) ----
+# Variables: ppt (mm, annual total), tmax (°C, annual mean), pet (mm, annual total)
+# Source: TerraClimate ~4 km monthly (Abatzoglou et al. 2018, Sci Data)
+# Uses OPeNDAP: fetches point values only, no large raster download.
+# Requires: remotes::install_github("mikejohnson51/climateR")
+# These replace the static et0_annual with year-specific climate covariates.
+
+terraclim_cache <- "data/terraclimate_mines.csv"
+
+if (!file.exists(terraclim_cache)) {
+  if (!requireNamespace("climateR", quietly = TRUE)) {
+    if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes")
+    remotes::install_github("mikejohnson51/climateR")
+  }
+  library(climateR)
+
+  climate_vars <- c("ppt", "tmax", "pet")
+  years        <- 2015:2019
+
+  climate_list <- lapply(years, function(yr) {
+    message("Extracting TerraClimate for ", yr, " ...")
+    r <- getTerraClim(
+      AOI       = sf_data,
+      varname   = climate_vars,
+      startDate = paste0(yr, "-01-01"),
+      endDate   = paste0(yr, "-12-31")
+    )
+    # r is a SpatRaster with 12 monthly layers per variable
+    vals <- terra::extract(r, sf_data, ID = FALSE)
+
+    ppt_cols  <- grep("^ppt",  names(vals), value = TRUE)
+    tmax_cols <- grep("^tmax", names(vals), value = TRUE)
+    pet_cols  <- grep("^pet",  names(vals), value = TRUE)
+
+    tibble(
+      id_mine       = sf_data$id_mine,
+      year          = yr,
+      annual_ppt_mm = rowSums(vals[, ppt_cols,  drop = FALSE], na.rm = TRUE),
+      mean_tmax_C   = rowMeans(vals[, tmax_cols, drop = FALSE], na.rm = TRUE) / 10, # TerraClimate stores tmax as °C × 10
+      annual_pet_mm = rowSums(vals[, pet_cols,   drop = FALSE], na.rm = TRUE)
+    )
+  })
+
+  climate_df <- bind_rows(climate_list)
+  write_csv(climate_df, terraclim_cache)
+  message("TerraClimate data cached to: ", terraclim_cache)
+} else {
+  climate_df <- read_csv(terraclim_cache, show_col_types = FALSE)
+}
+
 ts_data <- select(raw_data, id_mine, `Prod_2015`, `Prod_2016`, `Prod_2017`, `Prod_2018`, `Prod_2019`, ToWa_2015, RaWa_2015, ToWa_2016, RaWa_2016, ToWa_2017, RaWa_2017, ToWa_2018, RaWa_2018, ToWa_2019, RaWa_2019) |> 
   mutate(across(all_of(starts_with("Prod_20")), ~ as.numeric(ifelse(.x == "NA", "", .x)))) |>
   pivot_longer(cols = -id_mine, names_to = "year", values_to = "value") |> 
@@ -145,70 +193,90 @@ ts_data <- select(raw_data, id_mine, `Prod_2015`, `Prod_2016`, `Prod_2017`, `Pro
          year = as.numeric(year)) |>
   pivot_wider(id_cols = c(id_mine, year), names_from = row_data, values_from = value) |> 
   dplyr::mutate(
-         total_water = ifelse(total_water == 0, NA, total_water),
-         raw_water = ifelse(raw_water == 0, NA, raw_water)
+         total_water = ifelse(total_water == 0, NA, total_water), # replace 0 with NA since they are actually missing data not zero
+         raw_water = ifelse(raw_water == 0, NA, raw_water) # replace 0 with NA since they are actually missing data not zero
   ) |> 
   left_join(st_drop_geometry(sf_data)) |> 
-  dplyr::mutate(process_route = ifelse(process_route=="Other", "other", process_route), # harmonize to lowercase other 
-         process_route = ifelse(process_route=="0", "other", process_route), # harmonize zero to other 
-         process_route = ifelse(process_route=="pyro/hydro", "pyro", process_route), # merge "pyro/hydro" with "pyro" since there are not sufficient samples for "pyro/hydro"
+  dplyr::mutate(
+         process_route = ifelse(process_route%in%c("Other", "other", "0"), NA, process_route), # replace other with NA since the data is actually missing
+         # Merge "pyro" and "pyro/hydro" into a single "pyro_based" category.
+         # Both routes involve pyrometallurgical smelting; combined they have n=91
+         # (vs. n=6 and n=70 separately), which is sufficient to estimate a route
+         # effect robustly within the small training set.
+         process_route = case_when(
+           process_route %in% c("pyro", "pyro/hydro") ~ "pyro_based",
+           TRUE ~ process_route  # preserves concentrator, hydro, and NA
+         ),
          process_route = as.character(process_route),
          byproduct_group = as.character(byproduct_group),
+         byproduct_group = ifelse(byproduct_group=="CuCu", "yes", "no"),
          mine_type = tolower(as.character(mine_type)),
          ore_body_group = tolower(as.character(ore_body_group)),
-         mine_type = ifelse(mine_type=="open pit", "pit", mine_type), # simplify pit category
-         process_route = tolower(ifelse(process_route == "other", NA, process_route)), # replace other with NA since the data is actually missing
-         average_production = ifelse(average_production==0,NA,average_production)) |> # replace 0 with NA since they are actually missing data not zero
+         mine_type = ifelse(mine_type=="open pit", "pit", mine_type) # simplify pit category
+         ) |> 
+  rename(byproduct_production = byproduct_group) |>
+  group_by(id_mine) |>
+  mutate(average_production = ifelse(average_production==0|is.na(average_production), mean(production, na.rm = TRUE), average_production)) |>
+  ungroup() |>
+  left_join(climate_df, by = c("id_mine", "year")) |>
   dplyr::mutate(id = row_number()) |> # add an unique id for each observation
   relocate(id, .before = id_mine)
 
 # Check data availability
-png(filename = "./results/data_availability.png",
+png(filename = file.path(model_data_dir, "data_availability.png"),
     width = 300, height = 200, units = "mm", pointsize = 12, res = 300, bg = "white")
-ts_data |>
-  select(`Total Water` = total_water, `New Water`= raw_water, ore_body_group, process_route, mine_type, byproduct_group, production_available = production, ore_grade_available = ore_grade) |>
-  mutate(production_available = as.character(!is.na(production_available)), ore_grade_available = as.character(!is.na(ore_grade_available))) |>
-  pivot_longer(cols = -c(`Total Water`, `New Water`)) |> 
-  pivot_longer(cols = c(`Total Water`, `New Water`), names_to = "water_use", values_to = "volume", values_drop_na = TRUE) |> 
-  ggplot(aes(x = value, y = after_stat(count), fill = water_use)) + 
-  facet_wrap(~name, scales = "free") + 
-  geom_bar(stat = 'count', position = "dodge", width = 0.7) + 
-  geom_text(stat='count', aes(label=after_stat(count)), vjust=-0.1, position = position_dodge(width = 0.7)) +
-  scale_fill_grey(start = 0.8, end = 0.4) +
-  theme_bw()
+print(
+  ts_data |>
+    select(`Total Water` = total_water, `New Water`= raw_water, ore_body_group, process_route, mine_type, byproduct_production, production_available = production, ore_grade_available = ore_grade) |>
+    mutate(production_available = as.character(!is.na(production_available)), ore_grade_available = as.character(!is.na(ore_grade_available))) |>
+    pivot_longer(cols = -c(`Total Water`, `New Water`)) |>
+    pivot_longer(cols = c(`Total Water`, `New Water`), names_to = "water_use", values_to = "volume", values_drop_na = TRUE) |>
+    ggplot(aes(x = value, y = after_stat(count), fill = water_use)) +
+    facet_wrap(~name, scales = "free") +
+    geom_bar(stat = 'count', position = "dodge", width = 0.7) +
+    geom_text(stat='count', aes(label=after_stat(count)), vjust=-0.1, position = position_dodge(width = 0.7)) +
+    scale_fill_grey(start = 0.8, end = 0.4) +
+    xlab("") +
+    ylab("Count") +
+    theme_bw()
+)
 dev.off()
 
-png(filename = "./results/data_strata_boxplot.png",
+png(filename = file.path(model_data_dir, "data_strata_boxplot.png"),
     width = 300, height = 200, units = "mm", pointsize = 12, res = 300, bg = "white")
-ts_data |>
-  select(total_water, raw_water, ore_body_group, process_route, mine_type, byproduct_group) |>
-  pivot_longer(cols = -c(total_water, raw_water)) |> 
-  pivot_longer(cols = c(total_water, raw_water), names_to = "water_use", values_to = "volume", values_drop_na = TRUE) |> 
-  ggplot(aes(x = value, y = volume, colour = water_use)) + 
-  facet_wrap(~name, scales = "free") + 
-  geom_boxplot(outlier.colour="black", outlier.shape=16, outlier.size=2, notch=FALSE) +
-  scale_colour_grey(start = 0.8, end = 0.2) +
-  theme_bw()
+print(
+  ts_data |>
+    select(total_water, raw_water, ore_body_group, process_route, mine_type, byproduct_production) |>
+    pivot_longer(cols = -c(total_water, raw_water)) |>
+    pivot_longer(cols = c(total_water, raw_water), names_to = "water_use", values_to = "volume", values_drop_na = TRUE) |>
+    ggplot(aes(x = value, y = log10(volume), colour = water_use)) +
+    facet_wrap(~name, scales = "free") +
+    geom_boxplot(outlier.colour="black", outlier.shape=16, outlier.size=2, notch=FALSE) +
+    scale_colour_grey(start = 0.8, end = 0.2) +
+    theme_bw()
+)
 dev.off()
 
-png(filename = "./results/data_distribution.png",
+png(filename = file.path(model_data_dir, "data_distribution.png"),
     width = 300, height = 200, units = "mm", pointsize = 12, res = 300, bg = "white")
-transmute(ts_data, production, ore_grade, raw_water, total_water, 
-  water_diff = total_water - raw_water, freshwater_availability) |>
-  pivot_longer(cols = everything(), names_to = "variable", values_to = "value") |>
-  drop_na() |>
-  ggplot(aes(x = value)) +
-  geom_histogram(bins = 30, alpha = 0.7) +  # Adjust 'bins' as necessary
-  facet_wrap(~ variable, scales = "free") +  # Free scales if variables have different ranges
-  theme_bw() +
-  labs(title = "Distribution of Variables", x = "Value", y = "Frequency")
+print(
+  transmute(ts_data, production, ore_grade, raw_water, total_water,
+    water_diff = total_water - raw_water, freshwater_availability) |>
+    pivot_longer(cols = everything(), names_to = "variable", values_to = "value") |>
+    drop_na() |>
+    ggplot(aes(x = value)) +
+    geom_histogram(bins = 30, alpha = 0.7) +
+    facet_wrap(~ variable, scales = "free") +
+    theme_bw() +
+    labs(title = "Distribution of Variables", x = "Value", y = "Frequency")
+)
 dev.off()
 
-write_csv2(ts_data, "./data/ts_data_raw.csv")
-st_write(sf_data, "./data/sf_data_raw.gpkg", delete_dsn = TRUE)
+write_csv2(ts_data, file.path(model_data_dir, "ts_data_raw.csv"))
+st_write(sf_data, file.path(model_data_dir, "sf_data_raw.gpkg"), delete_dsn = TRUE)
 
 # Prepare model data
-model_data <- select(ts_data, id, id_mine, mine, country_code, year, raw_water, total_water, production, average_production, ore_grade, byproduct_group, mine_type, ore_body_group, process_route, et0_annual) |>
+model_data <- select(ts_data, id, id_mine, mine, country_code, year, raw_water, total_water, production, average_production, ore_grade, byproduct_production, mine_type, ore_body_group, process_route, annual_ppt_mm, mean_tmax_C, annual_pet_mm) |>
   mutate_if(is.character, as.factor) |>
   dplyr::group_by(id_mine) |>
   dplyr::mutate(average_production = mean(production, na.rm = TRUE), production = ifelse(is.na(production), average_production, production)) |>
@@ -221,7 +289,7 @@ model_data <- select(ts_data, id, id_mine, mine, country_code, year, raw_water, 
 outliers_ids <- dplyr::filter(model_data, id_mine %in% unique(as.character(dplyr::filter(model_data, outlier_flag == 1)$id_mine)))$id
 model_data |>
   dplyr::filter(id %in% outliers_ids) |>
-  select(id, id_mine, mine, country_code, year, raw_water, total_water, production, average_production) |>
+  select(id, id_mine, mine, country_code, year, raw_water, total_water, production, average_production, byproduct_production) |>
   print(n = 40)
   
 model_data <- model_data |>
@@ -234,32 +302,76 @@ model_data |>
     ore_extracted = 100 * production / ore_grade,
     ratio_raw_water_ore = raw_water / ore_extracted,
     ratio_total_water_ore = total_water / ore_extracted) |>
-    write_csv2("./data/ts_model_data.csv")
+    write_csv2(file.path(model_data_dir, "ts_model_data.csv"))
 
-# Fill predictors gaps using knn
-names(model_data)
-pred_data <- recipe(raw_water + total_water ~ ., data = model_data) |>
-  step_impute_knn(any_of(c("production", "ore_grade", "mine_type", "process_route")),
-                  impute_with = imp_vars(any_of(c("id", "mine", "year", "et0_annual"))), neighbors = 1,) |>
-  prep() |>
-  bake(model_data) |>
+# ---------------------------------------------------------------------------
+# Fill predictor gaps for prediction data
+# ---------------------------------------------------------------------------
+# Strategy:
+#   production     : within-mine mean already applied above (line ~231).
+#                    The 5 remaining NAs (1 mine, all years missing) cannot be
+#                    recovered and are excluded downstream by filter(production > 0).
+#   ore_grade      : continuous, 2.9% missing (15 mines). Imputed with median
+#                    stratified by ore_body_group, falling back to country_code
+#                    median, then global median. Small gap; stratified median is
+#                    transparent, non-parametric, and robust to skew.
+#   process_route,
+#   ore_body_group : categorical, 18-20% missing. NA is NOT imputed here.
+#                    Imputing from weak features (geography, mine type) would
+#                    inject noise and conflict with step_unknown() in the model
+#                    recipes, which correctly treats "unknown" as an informative
+#                    category that the model can learn from.
+#   mine_type      : 0% missing — no action needed.
+# ---------------------------------------------------------------------------
+
+# Record missingness before imputation
+imp_vars_check <- c("production", "ore_grade", "process_route", "ore_body_group")
+imp_before <- sapply(imp_vars_check, function(v) sum(is.na(model_data[[v]])))
+
+pred_data <- model_data |>
+  # ore_grade: stratified median imputation
+  dplyr::group_by(ore_body_group) |>
+  dplyr::mutate(ore_grade = ifelse(is.na(ore_grade),
+                                   median(ore_grade, na.rm = TRUE),
+                                   ore_grade)) |>
+  dplyr::ungroup() |>
+  dplyr::group_by(country_code) |>
+  dplyr::mutate(ore_grade = ifelse(is.na(ore_grade),
+                                   median(ore_grade, na.rm = TRUE),
+                                   ore_grade)) |>
+  dplyr::ungroup() |>
+  dplyr::mutate(ore_grade = ifelse(is.na(ore_grade),
+                                   median(ore_grade, na.rm = TRUE),
+                                   ore_grade)) |>
+  # Recalculate average_production and derived intensity fields
   dplyr::group_by(id_mine) |>
-  dplyr::mutate(average_production = mean(production, na.rm = TRUE)) |>
+  dplyr::mutate(average_production = ifelse(
+    average_production == 0 | is.na(average_production),
+    mean(production, na.rm = TRUE), average_production)) |>
   dplyr::ungroup() |>
   dplyr::mutate(
-    raw_water_intensity = raw_water / production,
+    raw_water_intensity   = raw_water   / production,
     total_water_intensity = total_water / production,
-    ore_extracted = 100 * production / ore_grade,
-    ratio_raw_water_ore = raw_water / ore_extracted,
+    ore_extracted         = 100 * production / ore_grade,
+    ratio_raw_water_ore   = raw_water   / ore_extracted,
     ratio_total_water_ore = total_water / ore_extracted)
 
-# aux <- model_data |>
-#   select(id, id_mine, mine, country_code, year, production, average_production, ore_grade, mine_type, process_route) |>
-#   filter(if_any(everything(), is.na))
+# Imputation statistics
+imp_after <- sapply(imp_vars_check, function(v) sum(is.na(pred_data[[v]])))
+imp_stats <- tibble(
+  variable         = imp_vars_check,
+  n_missing_before = as.integer(imp_before),
+  n_imputed        = as.integer(imp_before - imp_after),
+  n_still_missing  = as.integer(imp_after),
+  method           = c(
+    "within-mine mean (applied above; residual NAs excluded downstream)",
+    "stratified median: ore_body_group -> country_code -> global",
+    "none: NA retained as 'unknown' category (step_unknown in model recipe)",
+    "none: NA retained as 'unknown' category (step_unknown in model recipe)"
+  )
+)
+message("Predictor imputation summary:")
+print(imp_stats)
+write_csv(imp_stats, file.path(model_data_dir, "imputation_stats.csv"))
 
-# pred_data |>
-#   dplyr::filter(id_mine %in% unique(aux$id_mine)) |>
-#   select(id, id_mine, mine, country_code, year, raw_water, total_water, production, average_production, ore_grade, mine_type, process_route) |>
-#   View()
-
-write_csv2(pred_data, "./data/ts_pred_data.csv")
+write_csv2(pred_data, file.path(model_data_dir, "ts_pred_data.csv"))

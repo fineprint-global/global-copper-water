@@ -42,6 +42,12 @@ library(bayesplot)
 library(brms)
 library(kernlab)
 library(quantregForest)
+library(glmnet)
+library(earth)
+library(Cubist)
+library(kknn)
+library(doParallel)
+library(tidybayes)
 
 dir.create("./data", showWarnings = FALSE, recursive = TRUE)
 dir.create("./results", showWarnings = FALSE, recursive = TRUE)
@@ -326,38 +332,46 @@ revert_transformations <- function(rec, values) {
 
 predict_intervals_rf <- function(object, df, individuals = FALSE){
 
-  df_prep <- prep(object$recipe)
+  # object$recipe is already prepped by fit_final_model; use directly.
+  prepped    <- object$recipe
+  pred_cols  <- object$recipe$term_info$variable[
+                  object$recipe$term_info$role != "outcome"]
 
-  pred_data <- dplyr::select(df, object$recipe$var_info$variable) |>
-    bake(df_prep, new_data = _) |>
-    select(object$recipe$term_info$variable[object$recipe$term_info$role!="outcome"]) |>
-    drop_na()
+  baked_pred <- dplyr::select(df, object$recipe$var_info$variable) |>
+    bake(prepped, new_data = _) |>
+    select(all_of(pred_cols))
 
-  preds <- stats::predict(object$finalModel, newdata = pred_data, predict.all = TRUE)
+  # Identify rows that are fully complete (no NA predictors after baking).
+  # Rows with NA arise from unseen factor levels or missing inputs; they are
+  # excluded from the RF call and returned as NA in the output.
+  complete_idx <- which(complete.cases(baked_pred))
+  pred_data    <- as.data.frame(baked_pred[complete_idx, , drop = FALSE])
 
-  prediction <- revert_transformations(object$recipe, preds$aggregate)
-  prediction_sd <- apply(preds$individual, 1, function(x) sd(revert_transformations(object$recipe, x)))
+  preds <- stats::predict(object$model$finalModel, newdata = pred_data, predict.all = TRUE)
 
-  # if (is.null(log_base)) {
-  #   prediction <- preds$aggregate
-  #   prediction_sd <- apply(preds$individual, 1, sd)
-  # } else {
-  #   prediction <- log_base^preds$aggregate
-  #   prediction_sd <- apply(preds$individual, 1, function(x) sd(log_base^x))
-  # }
+  # SD of individual tree predictions in log10 space (before back-transformation).
+  # Used for 95% prediction intervals: 10^(log10(pred) +/- 1.96 * pred_sd_log10).
+  pred_sd_log10 <- apply(preds$individual, 1, sd)
+  prediction    <- revert_transformations(object$recipe, preds$aggregate)
+  prediction_sd <- apply(preds$individual, 1,
+                         function(x) sd(revert_transformations(object$recipe, x)))
 
-  out <- tibble(predicted = prediction, predicted_sd = prediction_sd) 
+  # Return a tibble with nrow(df) rows; NA where prediction was not possible.
+  out <- tibble(predicted          = rep(NA_real_, nrow(df)),
+                predicted_sd       = rep(NA_real_, nrow(df)),
+                predicted_sd_log10 = rep(NA_real_, nrow(df)))
+  out$predicted[complete_idx]          <- prediction
+  out$predicted_sd[complete_idx]       <- prediction_sd
+  out$predicted_sd_log10[complete_idx] <- pred_sd_log10
 
   if (individuals) {
-    out$individual <- lapply(1:nrow(preds$individual), function(i) 
-        if (is.null(log_base)) {
-          preds$individual[i,,drop=TRUE]
-        } else { 
-          log_base^preds$individual[i,,drop=TRUE]
-        })
+    out$individual <- vector("list", nrow(df))
+    for (i in seq_along(complete_idx)) {
+      out$individual[[complete_idx[i]]] <- preds$individual[i, , drop = TRUE]
+    }
   }
 
-  return(out) 
+  return(out)
 
 }
 
@@ -386,7 +400,7 @@ propagate_pred_error_rf <- function(rf1, rf2, df, n = 100, rf1_log_base = NULL, 
     pred_data <- df
     pred_data[[rf1_independent_var]] <- ifelse(is.na(pred_data[[rf1_independent_var]]), sampled_rf1_outputs, pred_data[[rf1_independent_var]])
 
-    predict_intervals_rf(object = rf2, pred_data, log_base = rf2_log_base) |>
+    predict_intervals_rf(object = rf2, pred_data) |>
       dplyr::select(predicted, predicted_sd)
 
   })
@@ -495,13 +509,9 @@ create_model_comparison_csv <- function(comparison_table) {
     return(df)
   }
   
-  # Apply the function to each metric in the list
-  mae_df <- format_table("MAE", comparison_table$MAE)
-  rmse_df <- format_table("RMSE", comparison_table$RMSE)
-  rsquared_df <- format_table("Rsquared", comparison_table$Rsquared)
-  
-  # Combine all metrics into a single data frame
-  combined_df <- rbind(mae_df, rmse_df, rsquared_df)
+  # Apply the function to each metric present in the table
+  metric_dfs <- lapply(names(comparison_table), function(m) format_table(m, comparison_table[[m]]))
+  combined_df <- do.call(rbind, metric_dfs)
   
   return(combined_df)
 }
@@ -512,6 +522,14 @@ get_resamples_stats <- function(models) {
   resamps_stats <- do.call("rbind", lapply(names(resamps_stats), function(i) data.frame(Metric = i, Model = row.names(resamps_stats[[i]]), resamps_stats[[i]][,-7])))
   rownames(resamps_stats) <- NULL
   return(resamps_stats)
+}
+
+# Returns raw per-fold resample values in long format for ggplot.
+# Columns: Resample, Model, Metric, value.
+get_resamples_long <- function(models) {
+  resamples(models)$values |>
+    pivot_longer(cols = -Resample, names_to = "key", values_to = "value") |>
+    separate(key, into = c("Model", "Metric"), sep = "~")
 }
 
 plot_models_performance <- function(models){
