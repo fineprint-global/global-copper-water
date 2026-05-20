@@ -261,6 +261,7 @@ df_avg_stats <- pred_mine_data |>
     rw_median_slope      = unique(rw_median_slope),
     rw_ci_lower          = unique(rw_ci_lower),
     rw_ci_upper          = unique(rw_ci_upper),
+    rw_ci_width          = unique(ci_width),
     rw_prob_gt0          = unique(rw_prob_gt0),
     rw_prob_lt0          = unique(rw_prob_lt0),
     rw_slope_uncertainty = unique(rw_slope_uncertainty),
@@ -349,8 +350,10 @@ read_csv2(file.path(results_dir, "final_predictions.csv"),
     year,
     new_water_m3_ref    = raw_water   * 1e3,   # ML -> m3
     new_water_m3_pred   = rw_pred     * 1e3,
+    new_water_m3_sd     = rw_pred_sd  * 1e3,   # SD of prediction (m3)
     total_water_m3_ref  = total_water * 1e3,
     total_water_m3_pred = tw_pred     * 1e3,
+    total_water_m3_sd   = tw_pred_sd  * 1e3,   # SD of prediction (m3)
     new_water_pi_lower  = rw_pi_lower * 1e3,
     new_water_pi_upper  = rw_pi_upper * 1e3,
     total_water_pi_lower = tw_pi_lower * 1e3,
@@ -376,7 +379,9 @@ water_data |>
     new_water_slope_median        = rw_median_slope,
     new_water_slope_lower         = rw_ci_lower,
     new_water_slope_upper         = rw_ci_upper,
+    new_water_slope_ci_width      = rw_ci_width,
     prob_increasing               = rw_prob_gt0,
+    prob_decreasing               = rw_prob_lt0,
     slope_uncertainty             = rw_slope_uncertainty,
     freshwater_availability_trend = freshwater_availability,
     avg_production,
