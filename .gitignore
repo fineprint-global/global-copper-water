@@ -7,3 +7,6 @@ Rplots.pdf
 report/
 .claude/
 model_data/
+*.Rout
+logs/
+*.RData

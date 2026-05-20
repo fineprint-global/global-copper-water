@@ -48,13 +48,9 @@ model_data_dir <- tail(sort(Filter(function(x) grepl(ts_pattern, x),
 message("Loading models from: ", results_dir)
 message("Loading data from:   ", model_data_dir)
 
-# Bayesian model cache: search all versioned results dirs for an existing fit
-# to avoid 10-30 min refitting when the results directory changes between runs.
-bayes_cache_candidates <- Filter(file.exists,
-  file.path(sort(list.dirs("./results", recursive = FALSE), decreasing = TRUE),
-            "fit_bayes_trends.rds"))
-bayes_cache <- if (length(bayes_cache_candidates) > 0) bayes_cache_candidates[1] else
-               file.path(results_dir, "fit_bayes_trends.rds")
+# Bayesian model cache: always use the current results directory so the
+# model is refit whenever the data version changes.
+bayes_cache <- file.path(results_dir, "fit_bayes_trends.rds")
 message("Bayesian cache: ", bayes_cache)
 
 ################################################################################
@@ -282,7 +278,7 @@ mine_data <- predictions_filled |>
     raw_water_log = log(raw_water_mm3),  # log-normal assumption for brm
     year_c        = year - 2017          # centre at midpoint for better mixing
   ) |>
-  drop_na(raw_water_mm3, production, lon, lat) |>
+  drop_na(raw_water_mm3, lon, lat) |>
   group_by(id_mine) |>
   mutate(n_years = n()) |>
   ungroup() |>
@@ -292,8 +288,12 @@ message(sprintf("Trend analysis: %d mine-year observations, %d mines",
                 nrow(mine_data), n_distinct(mine_data$id_mine)))
 
 # ---- Spatial autocorrelation (Moran's I) ----
+# Moran's I requires production, so use the subset of mine_data with non-NA
+# production. This keeps the Bayesian trend model data (mine_data) broader.
+moran_data <- mine_data |> drop_na(production)
+
 # Jitter coordinates slightly to avoid identical-coordinate errors in knn2nb.
-coords <- mine_data |>
+coords <- moran_data |>
   transmute(
     lon = jitter(lon, amount = 1e-5),
     lat = jitter(lat, amount = 1e-5)
@@ -302,9 +302,9 @@ nb    <- knn2nb(knearneigh(coords, k = 5))
 listw <- nb2listw(nb)
 
 moran_results <- list(
-  raw_water     = moran.test(mine_data$raw_water_mm3,  listw),
-  raw_water_log = moran.test(mine_data$raw_water_log,  listw),
-  production    = moran.test(mine_data$production,     listw)
+  raw_water     = moran.test(moran_data$raw_water_mm3,  listw),
+  raw_water_log = moran.test(moran_data$raw_water_log,  listw),
+  production    = moran.test(moran_data$production,     listw)
 )
 
 moran_table <- do.call(rbind, lapply(names(moran_results), function(v) {
@@ -319,13 +319,14 @@ print(moran_table)
 write_csv(moran_table, file.path(results_dir, "morans_i_results.csv"))
 
 # ---- Bayesian mixed-effects model ----
-# Model: log(raw_water) ~ year_c + (year_c | id_mine) + AR(1) error
+# Model: log(raw_water) ~ year_c + (year_c | id_mine)
 #
 # Rationale:
 #   - Random slope on year_c allows each mine to have its own trend.
-#   - AR(1) autocorrelation accounts for within-mine temporal dependence
-#     that persists after conditioning on the trend.
 #   - Log scale is appropriate for right-skewed water volumes.
+#   - AR(1) autocorrelation was removed: with only 5 time points per mine
+#     the parameter is not identifiable, producing a multimodal posterior
+#     that prevents convergence and contaminates slope estimates.
 #
 # Priors: weakly informative brms defaults (normal(0,1) on slopes after
 # standardisation, half-Student-t on variance components).
@@ -335,18 +336,16 @@ if (file.exists(bayes_cache)) {
 } else {
   message("Fitting Bayesian mixed model (this may take 10-30 minutes)...")
   fit_bayes <- brm(
-    bf(raw_water_log ~ year_c + (year_c | id_mine),
-       autocor = cor_ar(~ year_c | id_mine, p = 1)),
+    raw_water_log ~ year_c + (year_c | id_mine),
     data    = mine_data,
     family  = gaussian(),
     chains  = 4,
     cores   = 4,
-    iter    = 6000,
-    warmup  = 2000,
+    iter    = 4000,
+    warmup  = 1000,
     seed    = 123,
     control = list(
-      adapt_delta   = 0.99,   # conservative step size; reduces divergences
-      max_treedepth = 15      # deeper tree exploration for complex posteriors
+      adapt_delta   = 0.95
     )
   )
   write_rds(fit_bayes, file.path(results_dir, "fit_bayes_trends.rds"))

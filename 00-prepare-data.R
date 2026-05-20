@@ -133,45 +133,41 @@ sf_data <- st_join(sf_data, aqueduct)
 sf_use_s2(TRUE)
 
 # ---- TerraClimate climate predictors (year-specific, per mine) ----
-# Variables: ppt (mm, annual total), tmax (°C, annual mean), pet (mm, annual total)
+# Variables: ppt (mm, annual total), aet (mm, annual total — actual ET)
 # Source: TerraClimate ~4 km monthly (Abatzoglou et al. 2018, Sci Data)
-# Uses OPeNDAP: fetches point values only, no large raster download.
-# Requires: remotes::install_github("mikejohnson51/climateR")
-# These replace the static et0_annual with year-specific climate covariates.
+# Strategy: download one NetCDF file per variable per year (~40 MB each, 10 files
+# total), cached under data/terraclimate/. terra::extract on 500 points is
+# instantaneous. Files are permanent — subsequent runs skip all downloads.
 
 terraclim_cache <- "data/terraclimate_mines.csv"
 
 if (!file.exists(terraclim_cache)) {
-  if (!requireNamespace("climateR", quietly = TRUE)) {
-    if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes")
-    remotes::install_github("mikejohnson51/climateR")
-  }
-  library(climateR)
-
-  climate_vars <- c("ppt", "tmax", "pet")
-  years        <- 2015:2019
+  nc_dir   <- "data/terraclimate"
+  dir.create(nc_dir, showWarnings = FALSE)
+  base_url <- "https://climate.northwestknowledge.net/TERRACLIMATE-DATA"
+  years    <- 2015:2019
+  vars     <- c("ppt", "aet")
 
   climate_list <- lapply(years, function(yr) {
-    message("Extracting TerraClimate for ", yr, " ...")
-    r <- getTerraClim(
-      AOI       = sf_data,
-      varname   = climate_vars,
-      startDate = paste0(yr, "-01-01"),
-      endDate   = paste0(yr, "-12-31")
-    )
-    # r is a SpatRaster with 12 monthly layers per variable
-    vals <- terra::extract(r, sf_data, ID = FALSE)
-
-    ppt_cols  <- grep("^ppt",  names(vals), value = TRUE)
-    tmax_cols <- grep("^tmax", names(vals), value = TRUE)
-    pet_cols  <- grep("^pet",  names(vals), value = TRUE)
-
+    vals <- lapply(vars, function(v) {
+      nc_file <- file.path(nc_dir, sprintf("TerraClimate_%s_%d.nc", v, yr))
+      if (!file.exists(nc_file)) {
+        url <- sprintf("%s/TerraClimate_%s_%d.nc", base_url, v, yr)
+        message(sprintf("Downloading %s ...", basename(url)))
+        options(timeout = 600)
+        download.file(url, destfile = nc_file, mode = "wb", quiet = TRUE)
+        options(timeout = 60)
+      }
+      r    <- terra::rast(nc_file)           # 12 monthly layers
+      extr <- terra::extract(r, sf_data, ID = FALSE)
+      rowSums(extr, na.rm = TRUE)            # annual total (mm)
+    })
+    names(vals) <- vars
     tibble(
       id_mine       = sf_data$id_mine,
       year          = yr,
-      annual_ppt_mm = rowSums(vals[, ppt_cols,  drop = FALSE], na.rm = TRUE),
-      mean_tmax_C   = rowMeans(vals[, tmax_cols, drop = FALSE], na.rm = TRUE) / 10, # TerraClimate stores tmax as °C × 10
-      annual_pet_mm = rowSums(vals[, pet_cols,   drop = FALSE], na.rm = TRUE)
+      annual_ppt_mm = vals[["ppt"]],
+      annual_aet_mm = vals[["aet"]]
     )
   })
 
@@ -276,7 +272,7 @@ write_csv2(ts_data, file.path(model_data_dir, "ts_data_raw.csv"))
 st_write(sf_data, file.path(model_data_dir, "sf_data_raw.gpkg"), delete_dsn = TRUE)
 
 # Prepare model data
-model_data <- select(ts_data, id, id_mine, mine, country_code, year, raw_water, total_water, production, average_production, ore_grade, byproduct_production, mine_type, ore_body_group, process_route, annual_ppt_mm, mean_tmax_C, annual_pet_mm) |>
+model_data <- select(ts_data, id, id_mine, mine, country_code, year, raw_water, total_water, production, average_production, ore_grade, byproduct_production, mine_type, ore_body_group, process_route, annual_ppt_mm, annual_aet_mm) |>
   mutate_if(is.character, as.factor) |>
   dplyr::group_by(id_mine) |>
   dplyr::mutate(average_production = mean(production, na.rm = TRUE), production = ifelse(is.na(production), average_production, production)) |>

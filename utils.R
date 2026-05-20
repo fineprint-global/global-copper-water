@@ -342,19 +342,34 @@ predict_intervals_rf <- function(object, df, individuals = FALSE){
     select(all_of(pred_cols))
 
   # Identify rows that are fully complete (no NA predictors after baking).
-  # Rows with NA arise from unseen factor levels or missing inputs; they are
-  # excluded from the RF call and returned as NA in the output.
   complete_idx <- which(complete.cases(baked_pred))
   pred_data    <- as.data.frame(baked_pred[complete_idx, , drop = FALSE])
 
-  preds <- stats::predict(object$model$finalModel, newdata = pred_data, predict.all = TRUE)
+  is_rf <- inherits(object$model$finalModel, "randomForest")
 
-  # SD of individual tree predictions in log10 space (before back-transformation).
-  # Used for 95% prediction intervals: 10^(log10(pred) +/- 1.96 * pred_sd_log10).
-  pred_sd_log10 <- apply(preds$individual, 1, sd)
-  prediction    <- revert_transformations(object$recipe, preds$aggregate)
-  prediction_sd <- apply(preds$individual, 1,
-                         function(x) sd(revert_transformations(object$recipe, x)))
+  if (is_rf) {
+    # RF: use tree-level predictions for SD estimation.
+    preds <- stats::predict(object$model$finalModel, newdata = pred_data,
+                            predict.all = TRUE)
+    pred_sd_log10 <- apply(preds$individual, 1, sd)
+    prediction    <- revert_transformations(object$recipe, preds$aggregate)
+    prediction_sd <- apply(preds$individual, 1,
+                           function(x) sd(revert_transformations(object$recipe, x)))
+  } else {
+    # Non-RF model (kknn, earth, cubist, glmnet): point predictions via caret
+    # wrapper (handles model-specific predict interfaces).
+    # Uncertainty: constant SD = outer-CV Log10RMSE for the selected method.
+    # No preprocessing in train() call (x/y interface), so no double-baking.
+    raw_pred      <- predict(object$model,
+                             newdata = pred_data[, object$features, drop = FALSE])
+    prediction    <- revert_transformations(object$recipe, raw_pred)
+    cv_sd <- if (!is.null(object$outer_cv)) {
+      as.numeric(object$outer_cv$Log10RMSE_mean[
+        object$outer_cv$model == object$model$method])
+    } else NA_real_
+    pred_sd_log10 <- rep(cv_sd, length(raw_pred))
+    prediction_sd <- rep(NA_real_,  length(raw_pred))
+  }
 
   # Return a tibble with nrow(df) rows; NA where prediction was not possible.
   out <- tibble(predicted          = rep(NA_real_, nrow(df)),
@@ -364,7 +379,7 @@ predict_intervals_rf <- function(object, df, individuals = FALSE){
   out$predicted_sd[complete_idx]       <- prediction_sd
   out$predicted_sd_log10[complete_idx] <- pred_sd_log10
 
-  if (individuals) {
+  if (individuals && is_rf) {
     out$individual <- vector("list", nrow(df))
     for (i in seq_along(complete_idx)) {
       out$individual[[complete_idx[i]]] <- preds$individual[i, , drop = TRUE]

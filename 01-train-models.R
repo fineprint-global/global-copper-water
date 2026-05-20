@@ -71,7 +71,7 @@ message("Results will be saved to: ", results_dir)
 # ---------------------------------------------------------------------------
 # Candidate models
 # ---------------------------------------------------------------------------
-models <- c("glmnet", "earth", "rf", "cubist", "kknn")
+models <- c("glmnet", "earth", "rf", "cubist")
 names(models) <- models
 
 # ---------------------------------------------------------------------------
@@ -85,7 +85,7 @@ model_data <- read_csv2(file.path(model_data_dir, "ts_model_data.csv"),
                         show_col_types = FALSE) |>
   mutate_if(is.character, as.factor) |>
   select(id, raw_water, total_water, production, ore_grade, mine_type,
-         ore_body_group, process_route, et0_annual, byproduct_production)
+         ore_body_group, process_route, annual_ppt_mm, annual_aet_mm, byproduct_production)
 
 # Geographic metadata for LORO / LOCO validation.
 # region and country_code are not model predictors; kept separate so they
@@ -100,9 +100,9 @@ geo_meta <- read_csv2(file.path(model_data_dir, "ts_data_raw.csv"),
 # TW additionally uses raw_water (chain structure).
 # ore_extracted excluded: collinear with production + ore_grade in log space.
 rw_predictors <- c("production", "ore_grade", "mine_type", "process_route",
-                   "et0_annual", "ore_body_group", "byproduct_production")
+                   "annual_ppt_mm", "annual_aet_mm", "ore_body_group", "byproduct_production")
 tw_predictors <- c("raw_water", "ore_grade", "mine_type", "process_route",
-                   "et0_annual", "ore_body_group", "byproduct_production")
+                   "annual_ppt_mm", "annual_aet_mm", "ore_body_group", "byproduct_production")
 
 # ---------------------------------------------------------------------------
 # Performance metrics
