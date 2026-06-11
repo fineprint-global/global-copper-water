@@ -76,8 +76,22 @@ new_data <- read_csv2(file.path(model_data_dir, "ts_pred_data.csv"),
                 all_of(all_vars),
                 any_of(c("raw_water", "total_water",
                           "raw_water_intensity", "total_water_intensity"))) |>
-  dplyr::mutate_if(is.character, as.factor) |>
-  filter(production > 0, ore_grade > 0)
+  dplyr::mutate_if(is.character, as.factor)
+
+# Mine-years that satisfy the ML predictor constraints. Rows with
+# production == 0 or ore_grade == 0 are reported observations but cannot be
+# log-transformed by the model recipe, so they are excluded from prediction
+# (and were already excluded from training/validation in 01-train-models.R).
+# They are RETAINED in new_data so any reported raw_water / total_water /
+# production values flow through to final_predictions.csv for transparency;
+# their predictions are left as NA.
+predictable <- with(new_data,
+                    !is.na(production) & production > 0 &
+                    !is.na(ore_grade)  & ore_grade  > 0)
+message(sprintf(
+  "Predictable rows: %d / %d  (%d retained without prediction: production or ore_grade not > 0)",
+  sum(predictable), nrow(new_data), sum(!predictable)
+))
 
 # Track which rows have observed (non-imputed) raw_water before filling
 rw_observed_mask <- !is.na(new_data$raw_water)
@@ -85,14 +99,21 @@ rw_observed_mask <- !is.na(new_data$raw_water)
 ################################################################################
 ### Step 1: Predict raw water with log10 uncertainty
 # raw_water is renamed 'target' to match the RW recipe's outcome role.
-rw_pred <- predict_intervals_rf(
+# Predictions are run only on the `predictable` subset; non-predictable rows
+# keep NA so reported values are retained without artificial predictions.
+rw_pred <- tibble(
+  rw_pred          = rep(NA_real_, nrow(new_data)),
+  rw_pred_sd       = rep(NA_real_, nrow(new_data)),
+  rw_pred_sd_log10 = rep(NA_real_, nrow(new_data))
+)
+rw_pred[predictable, ] <- predict_intervals_rf(
   object = rw_model,
-  df     = dplyr::rename(new_data, target = raw_water)
+  df     = dplyr::rename(new_data[predictable, ], target = raw_water)
 ) |>
   transmute(
-    rw_pred            = predicted,
-    rw_pred_sd         = predicted_sd,
-    rw_pred_sd_log10   = predicted_sd_log10
+    rw_pred          = predicted,
+    rw_pred_sd       = predicted_sd,
+    rw_pred_sd_log10 = predicted_sd_log10
   )
 
 ### Step 2: Fill missing raw_water with model predictions
@@ -107,14 +128,20 @@ new_data_filled <- new_data |>
 ### Step 3: Predict total water with log10 uncertainty
 # A placeholder target column (NA) is added so the TW recipe can find its
 # outcome variable; observed total_water values are not used for prediction.
-tw_pred <- predict_intervals_rf(
+# As with RW, predictions are run only on the `predictable` subset.
+tw_pred <- tibble(
+  tw_pred          = rep(NA_real_, nrow(new_data)),
+  tw_pred_sd       = rep(NA_real_, nrow(new_data)),
+  tw_pred_sd_log10 = rep(NA_real_, nrow(new_data))
+)
+tw_pred[predictable, ] <- predict_intervals_rf(
   object = tw_model,
-  df     = dplyr::mutate(new_data_filled, target = NA_real_)
+  df     = dplyr::mutate(new_data_filled[predictable, ], target = NA_real_)
 ) |>
   transmute(
-    tw_pred            = predicted,
-    tw_pred_sd         = predicted_sd,
-    tw_pred_sd_log10   = predicted_sd_log10
+    tw_pred          = predicted,
+    tw_pred_sd       = predicted_sd,
+    tw_pred_sd_log10 = predicted_sd_log10
   )
 
 ### Step 4: Propagate RW uncertainty into TW for imputed-RW rows
@@ -143,17 +170,23 @@ predictions <- bind_cols(
 
 ################################################################################
 ### Coverage diagnostics
-n_total   <- nrow(predictions)
-n_rw_obs  <- sum(!is.na(predictions$raw_water))
-n_tw_obs  <- sum(!is.na(predictions$total_water))
-n_rw_pred <- sum(!is.na(predictions$rw_pred))
-n_tw_pred <- sum(!is.na(predictions$tw_pred))
-n_imputed <- sum(predictions$tw_uncertainty_source == "imputed_rw", na.rm = TRUE)
+n_total       <- nrow(predictions)
+n_rw_obs      <- sum(!is.na(predictions$raw_water))
+n_tw_obs      <- sum(!is.na(predictions$total_water))
+n_rw_pred     <- sum(!is.na(predictions$rw_pred))
+n_tw_pred     <- sum(!is.na(predictions$tw_pred))
+n_rw_pred_obs <- sum(!is.na(predictions$rw_pred) & !is.na(predictions$raw_water))
+n_imputed     <- sum(predictions$tw_uncertainty_source == "imputed_rw" &
+                     !is.na(predictions$tw_pred), na.rm = TRUE)
 
 message(sprintf(
-  "Coverage: %d/%d rows have RW prediction (%.1f%%)  [%d observed + %d imputed]",
+  "Coverage: %d/%d rows have RW prediction (%.1f%%)  [%d on observed-RW rows + %d imputed]",
   n_rw_pred, n_total, 100 * n_rw_pred / n_total,
-  n_rw_obs, n_rw_pred - n_rw_obs
+  n_rw_pred_obs, n_rw_pred - n_rw_pred_obs
+))
+message(sprintf(
+  "Reported raw_water rows retained without ML prediction: %d (production or ore_grade not > 0)",
+  n_rw_obs - n_rw_pred_obs
 ))
 message(sprintf(
   "Coverage: %d/%d rows have TW prediction (%.1f%%)  [%d with propagated uncertainty]",
@@ -271,8 +304,13 @@ sf_coords <- sf_data |>
 # Prepare mine-level time-series data.
 # Only mines with > 2 years of data are included (minimum for slope estimation).
 # Uses rw_filled (observed when available, predicted otherwise), in Mm3.
+# Mine-years with production == 0 or ore_grade == 0 are excluded here for
+# consistency with the ML training/validation/prediction exclusion -- such
+# rows are retained in predictions_filled (and final_predictions.csv) for
+# transparency but do not enter any modelling step.
 mine_data <- predictions_filled |>
   left_join(sf_coords, by = "id_mine") |>
+  filter(production > 0, ore_grade > 0) |>
   mutate(
     raw_water_mm3 = rw_filled * 1e-3,   # ML -> Mm3
     raw_water_log = log(raw_water_mm3),  # log-normal assumption for brm

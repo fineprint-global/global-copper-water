@@ -205,7 +205,7 @@ ts_data <- select(raw_data, id_mine, `Prod_2015`, `Prod_2016`, `Prod_2017`, `Pro
          ),
          process_route = as.character(process_route),
          byproduct_group = as.character(byproduct_group),
-         byproduct_group = ifelse(byproduct_group=="CuCu", "yes", "no"),
+         byproduct_group = ifelse(byproduct_group=="CuCu", "no", "yes"),
          mine_type = tolower(as.character(mine_type)),
          ore_body_group = tolower(as.character(ore_body_group)),
          mine_type = ifelse(mine_type=="open pit", "pit", mine_type) # simplify pit category

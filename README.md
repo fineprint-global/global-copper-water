@@ -113,7 +113,16 @@ The demo runs the full analysis pipeline on a provided dataset.
       * `copper_mine_site_level_new_water_slope_2015-2019.csv`: A summary of water use trends and a quadrant analysis.
 
 * **Expected Run Time**:
-    The total run time depends heavily on the size of the input data and the speed of your machine. The model training step (01-train-models.R), which involves repeated cross-validation, is the most computationally intensive part. On a normal desktop computer, the full pipeline could take anywhere from 1 to 2 hours.
+    Total run time depends on the input data size and machine speed. On a 16-core AMD Ryzen 7 PRO 8840U laptop with 32 GB RAM (Ubuntu 24.04, R 4.6.0), the full pipeline on the original dataset (~500 mines x 5 years) runs end-to-end in roughly **7 minutes**:
+
+    | Script | Runtime | Notes |
+    |---|---|---|
+    | `00-prepare-data.R` | ~30 s | Mostly geospatial extracts; assumes the public datasets are already cached under `./data/`. First run is longer due to one-time downloads. |
+    | `01-train-models.R` | ~3-4 min | Nested 5x5 CV with RFE and hyperparameter tuning across four model families (glmnet, earth, rf, cubist), plus LORO and LOCO geographic audits. Most computationally intensive step. |
+    | `02-predict-water-use.R` | ~3 min | RF predictions with uncertainty propagation, plus a Bayesian mixed-effects trend model (`brms`/Stan) refit on each run when no cache is present in the results directory. |
+    | `03-water-use-analysis.R` | ~15 s | Aggregations, maps, and quadrant analysis. |
+
+    On a slower machine (4-8 cores) expect the total to fall in the 15-30 minute range, dominated by `01-train-models.R` and the Stan compile-and-fit in `02-predict-water-use.R`. A larger input dataset would scale `01` roughly linearly with N (inner CV is parallelised across cores).
 
 
 
